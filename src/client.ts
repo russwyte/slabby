@@ -16,6 +16,8 @@
 
 /**
  * Slab GraphQL API client using Effect
+ *
+ * ✅ Updated to match actual Slab GraphQL schema
  */
 
 import { Context, Effect, Layer } from "effect";
@@ -23,9 +25,10 @@ import type { SlabPost, SlabSearchResult, SlabListResult } from "./types.ts";
 import { ConfigService } from "./config.ts";
 import {
   GET_POST_QUERY,
-  UPDATE_POST_MUTATION,
+  UPDATE_POST_CONTENT_MUTATION,
   SEARCH_POSTS_QUERY,
-  LIST_POSTS_QUERY,
+  GET_TOPIC_POSTS_QUERY,
+  GET_ORGANIZATION_POSTS_QUERY,
 } from "./graphql.ts";
 
 /**
@@ -99,7 +102,7 @@ const makeGraphQLRequest = <T>(
         fetch(apiUrl, {
           method: "POST",
           headers: {
-            // NOTE: Slab uses "Authorization: token <TOKEN>" not "Bearer"
+            // Slab uses "Authorization: token <TOKEN>" not "Bearer"
             Authorization: `token ${token}`,
             "Content-Type": "application/json",
           },
@@ -142,31 +145,69 @@ const makeGraphQLRequest = <T>(
   });
 
 /**
- * Transform GraphQL post response to SlabPost type
- * Handles different casing conventions (camelCase vs snake_case)
+ * Convert Quill Delta JSON content to plain text
+ * Slab stores content in Quill Delta format
  */
-const transformPost = (post: any): SlabPost => ({
-  id: post.id,
-  title: post.title,
-  content: post.content || post.body || "",
-  url: post.url,
-  created_at: post.createdAt || post.created_at,
-  updated_at: post.updatedAt || post.updated_at,
-  created_by: post.createdBy || post.created_by
-    ? {
-        id: (post.createdBy || post.created_by).id,
-        display_name: (post.createdBy || post.created_by).displayName || (post.createdBy || post.created_by).display_name,
-        email: (post.createdBy || post.created_by).email,
+const deltaToPlainText = (delta: any): string => {
+  if (!delta || !Array.isArray(delta)) return "";
+  return delta
+    .map((op: any) => {
+      if (typeof op.insert === "string") {
+        return op.insert;
       }
-    : undefined,
-  updated_by: post.updatedBy || post.updated_by
-    ? {
-        id: (post.updatedBy || post.updated_by).id,
-        display_name: (post.updatedBy || post.updated_by).displayName || (post.updatedBy || post.updated_by).display_name,
-        email: (post.updatedBy || post.updated_by).email,
-      }
-    : undefined,
-});
+      return "";
+    })
+    .join("");
+};
+
+/**
+ * Create a delta operation to replace all content
+ * First deletes everything, then inserts new content
+ */
+const createReplacementDelta = (currentContent: any, newText: string): any => {
+  // Calculate current content length
+  const currentLength = Array.isArray(currentContent)
+    ? currentContent.reduce((sum: number, op: any) => {
+        if (typeof op.insert === "string") return sum + op.insert.length;
+        return sum + 1; // embeds count as 1 character
+      }, 0)
+    : 0;
+
+  // Ensure new text ends with double newline
+  const normalizedText = newText.endsWith("\n\n") ? newText : newText + "\n\n";
+
+  return {
+    ops: [
+      ...(currentLength > 0 ? [{ delete: currentLength }] : []),
+      { insert: normalizedText },
+    ],
+  };
+};
+
+/**
+ * Transform GraphQL post response to SlabPost type
+ * Uses actual Slab schema field names: insertedAt, publishedAt, owner
+ */
+const transformPost = (post: any): SlabPost => {
+  // Convert Delta JSON content to plain text for easier consumption
+  const contentText = typeof post.content === "string" ? post.content : deltaToPlainText(post.content);
+
+  return {
+    id: post.id,
+    title: post.title,
+    content: contentText,
+    url: post.url || `https://slab.com/posts/${post.id}`, // Construct URL if not provided
+    created_at: post.insertedAt, // Slab uses insertedAt
+    updated_at: post.updatedAt,
+    created_by: post.owner
+      ? {
+          id: post.owner.id,
+          display_name: post.owner.name,
+          email: post.owner.email,
+        }
+      : undefined,
+  };
+};
 
 /**
  * Live Slab GraphQL client implementation
@@ -189,41 +230,73 @@ export const SlabClientServiceLive = Layer.effect(
 
       updatePost: (postId: string, content: string) =>
         Effect.gen(function* () {
-          const data = yield* makeGraphQLRequest<{ updatePost: { post: any } }>(graphqlUrl, apiToken, {
-            query: UPDATE_POST_MUTATION,
-            variables: { id: postId, content },
+          // First, get the current post to calculate the replacement delta
+          const currentData = yield* makeGraphQLRequest<{ post: any }>(graphqlUrl, apiToken, {
+            query: GET_POST_QUERY,
+            variables: { id: postId },
           });
-          return transformPost(data.updatePost.post);
+
+          // Create delta that replaces all content
+          const delta = createReplacementDelta(currentData.post.content, content);
+
+          // Update the post content
+          const updateData = yield* makeGraphQLRequest<{ updatePostContent: any }>(graphqlUrl, apiToken, {
+            query: UPDATE_POST_CONTENT_MUTATION,
+            variables: { id: postId, delta },
+          });
+
+          return transformPost(updateData.updatePostContent);
         }),
 
       searchPosts: (query: string) =>
         Effect.gen(function* () {
           const data = yield* makeGraphQLRequest<{ search: any }>(graphqlUrl, apiToken, {
             query: SEARCH_POSTS_QUERY,
-            variables: { query },
+            variables: { query, first: 20 }, // Get first 20 results
           });
 
+          // Extract posts from search edges
+          const posts =
+            data.search.edges?.map((edge: any) => {
+              if (edge.node && edge.node.post) {
+                return transformPost(edge.node.post);
+              }
+              return null;
+            }).filter(Boolean) || [];
+
           return {
-            posts: (data.search.posts || []).map(transformPost),
-            total_count: data.search.totalCount || data.search.total_count,
+            posts,
+            total_count: posts.length, // Total count not directly available in cursor pagination
           };
         }),
 
       listPosts: (topicId?: string) =>
         Effect.gen(function* () {
-          const data = yield* makeGraphQLRequest<{ posts: any }>(graphqlUrl, apiToken, {
-            query: LIST_POSTS_QUERY,
-            variables: topicId ? { topicId } : {},
-          });
+          if (topicId) {
+            // Get posts for specific topic
+            const data = yield* makeGraphQLRequest<{ topic: any }>(graphqlUrl, apiToken, {
+              query: GET_TOPIC_POSTS_QUERY,
+              variables: { topicId },
+            });
 
-          // Handle different response structures
-          const posts = data.posts.items || data.posts || [];
-          const totalCount = data.posts.totalCount || data.posts.total_count;
+            const posts = (data.topic.posts || []).map(transformPost);
+            return {
+              posts,
+              total_count: posts.length,
+            };
+          } else {
+            // Get all organization posts
+            const data = yield* makeGraphQLRequest<{ organization: any }>(graphqlUrl, apiToken, {
+              query: GET_ORGANIZATION_POSTS_QUERY,
+              variables: {},
+            });
 
-          return {
-            posts: posts.map(transformPost),
-            total_count: totalCount,
-          };
+            const posts = (data.organization.posts || []).map(transformPost);
+            return {
+              posts,
+              total_count: posts.length,
+            };
+          }
         }),
     };
   })
