@@ -142,8 +142,8 @@ npx @modelcontextprotocol/inspector bun run index.ts
 
 Slabby implements the [Model Context Protocol](https://modelcontextprotocol.io), which allows AI assistants like Claude to interact with external tools and services. When you ask Claude Code to read or update Slab content, it:
 
-1. Uses your Slab API token to authenticate
-2. Makes requests to the Slab REST API
+1. Uses your Slab API token to authenticate (format: `Authorization: token YOUR_TOKEN`)
+2. Makes requests to the Slab GraphQL API at `https://api.slab.com/v1/graphql`
 3. Returns results to Claude Code
 4. All edits are attributed to your user account in Slab
 
@@ -156,12 +156,16 @@ Slabby implements the [Model Context Protocol](https://modelcontextprotocol.io),
 
 ## Slab API Reference
 
-This project uses the [Slab REST API v1](https://api.slab.com/). Key endpoints:
+This project uses the [Slab GraphQL API](https://api.slab.com/v1/graphql). The GraphQL schema is documented at:
+https://studio.apollographql.com/public/Slab/variant/current/schema/reference
 
-- `GET /v1/posts/:id` - Fetch post content
-- `PATCH /v1/posts/:id` - Update post content
-- `GET /v1/search` - Search posts
-- `GET /v1/posts` - List posts
+Key operations:
+- `query GetPost` - Fetch post content by ID
+- `mutation UpdatePost` - Update post content
+- `query SearchPosts` - Search posts across workspace
+- `query ListPosts` - List posts, optionally filtered by topic
+
+**⚠️ Important**: The GraphQL queries in this project are based on common GraphQL patterns and need to be verified against the actual Slab schema before use with production credentials. See [SCHEMA_VERIFICATION.md](SCHEMA_VERIFICATION.md) for a detailed verification checklist.
 
 ## Troubleshooting
 
