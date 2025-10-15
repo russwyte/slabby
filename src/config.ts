@@ -34,7 +34,7 @@ export class ConfigError {
 export interface SlabConfig {
   readonly apiToken: string;
   readonly team: string;
-  readonly baseUrl: string;
+  readonly graphqlUrl: string;
 }
 
 /**
@@ -68,7 +68,7 @@ export const loadConfig = (): Effect.Effect<SlabConfig, ConfigError> =>
     return {
       apiToken,
       team,
-      baseUrl: `https://${team}.slab.com/api/v1`,
+      graphqlUrl: "https://api.slab.com/v1/graphql",
     };
   });
 
