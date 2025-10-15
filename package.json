@@ -1,0 +1,56 @@
+{
+  "name": "@russwyte/slabby",
+  "version": "0.1.0",
+  "description": "MCP server for Slab knowledge base integration with AI coding agents",
+  "module": "index.ts",
+  "type": "module",
+  "bin": {
+    "slabby": "./index.ts"
+  },
+  "scripts": {
+    "start": "bun run index.ts",
+    "dev": "bun run --watch index.ts",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "prepublishOnly": "bun test"
+  },
+  "files": [
+    "src",
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "mcp",
+    "slab",
+    "claude",
+    "ai",
+    "knowledge-base",
+    "anthropic",
+    "model-context-protocol",
+    "documentation",
+    "coding-agent"
+  ],
+  "author": "Russ White",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/russwyte/slabby.git"
+  },
+  "homepage": "https://github.com/russwyte/slabby#readme",
+  "bugs": {
+    "url": "https://github.com/russwyte/slabby/issues"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0"
+  }
+}

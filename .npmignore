@@ -1,0 +1,31 @@
+# Test files
+test/
+*.test.ts
+*.spec.ts
+
+# Development files
+.env.example
+.env
+CLAUDE.md
+.claude/
+tsconfig.json
+
+# IDE and editor files
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# CI/CD
+.github/
+
+# Build artifacts
+*.log
+coverage/
+.cache/
