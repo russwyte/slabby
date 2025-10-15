@@ -15,72 +15,116 @@
  */
 
 /**
- * Slab API client
+ * Slab API client using Effect
  */
 
-import type { SlabPost, SlabSearchResult, SlabListResult, SlabConfig } from "./types.ts";
+import { Context, Effect, Layer } from "effect";
+import type { SlabPost, SlabSearchResult, SlabListResult } from "./types.ts";
+import { ConfigService } from "./config.ts";
 
-export class SlabClient {
-  private token: string;
-  private baseUrl: string;
+/**
+ * Error types for Slab API operations
+ */
+export class SlabApiError {
+  readonly _tag = "SlabApiError";
+  constructor(
+    readonly message: string,
+    readonly status?: number
+  ) {}
+}
 
-  constructor(config: SlabConfig) {
-    this.token = config.token;
-    this.baseUrl = config.baseUrl;
-  }
+export class SlabNetworkError {
+  readonly _tag = "SlabNetworkError";
+  constructor(
+    readonly message: string,
+    readonly cause?: unknown
+  ) {}
+}
 
-  /**
-   * Makes an authenticated request to the Slab API
-   */
-  private async request(endpoint: string, options: RequestInit = {}): Promise<any> {
-    const url = `${this.baseUrl}${endpoint}`;
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        "Authorization": `Bearer ${this.token}`,
-        "Content-Type": "application/json",
-        ...options.headers,
-      },
+/**
+ * Slab client service interface
+ */
+export interface SlabClientService {
+  readonly getPost: (postId: string) => Effect.Effect<SlabPost, SlabApiError | SlabNetworkError>;
+  readonly updatePost: (postId: string, content: string) => Effect.Effect<SlabPost, SlabApiError | SlabNetworkError>;
+  readonly searchPosts: (query: string) => Effect.Effect<SlabSearchResult, SlabApiError | SlabNetworkError>;
+  readonly listPosts: (topicId?: string) => Effect.Effect<SlabListResult, SlabApiError | SlabNetworkError>;
+}
+
+/**
+ * Slab client context tag
+ */
+export const SlabClientService = Context.GenericTag<SlabClientService>("@services/SlabClientService");
+
+/**
+ * Make an authenticated request to the Slab API
+ */
+const makeRequest = (
+  baseUrl: string,
+  token: string,
+  endpoint: string,
+  options: RequestInit = {}
+): Effect.Effect<any, SlabApiError | SlabNetworkError> =>
+  Effect.gen(function* () {
+    const url = `${baseUrl}${endpoint}`;
+
+    // Attempt the fetch operation
+    const response = yield* Effect.tryPromise({
+      try: () =>
+        fetch(url, {
+          ...options,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            ...options.headers,
+          },
+        }),
+      catch: (error) => new SlabNetworkError(`Network error: ${error}`, error),
     });
 
+    // Check if response is ok
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Slab API error (${response.status}): ${errorText}`);
+      const errorText = yield* Effect.tryPromise({
+        try: () => response.text(),
+        catch: (error) => new SlabNetworkError(`Unable to read error response: ${error}`, error),
+      });
+      return yield* Effect.fail(new SlabApiError(`Slab API error (${response.status}): ${errorText}`, response.status));
     }
 
-    return response.json();
-  }
-
-  /**
-   * Fetches a Slab post by ID
-   */
-  async getPost(postId: string): Promise<SlabPost> {
-    return this.request(`/posts/${postId}`);
-  }
-
-  /**
-   * Updates a Slab post with new content
-   */
-  async updatePost(postId: string, content: string): Promise<SlabPost> {
-    return this.request(`/posts/${postId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ content }),
+    // Parse JSON response
+    return yield* Effect.tryPromise({
+      try: () => response.json(),
+      catch: (error) => new SlabNetworkError(`Failed to parse JSON response: ${error}`, error),
     });
-  }
+  });
 
-  /**
-   * Searches for posts matching a query
-   */
-  async searchPosts(query: string): Promise<SlabSearchResult> {
-    const params = new URLSearchParams({ query });
-    return this.request(`/search?${params}`);
-  }
+/**
+ * Live Slab client implementation
+ */
+export const SlabClientServiceLive = Layer.effect(
+  SlabClientService,
+  Effect.gen(function* () {
+    const { config } = yield* ConfigService;
+    const { baseUrl, apiToken } = config;
 
-  /**
-   * Lists posts, optionally filtered by topic ID
-   */
-  async listPosts(topicId?: string): Promise<SlabListResult> {
-    const params = topicId ? `?topic_id=${topicId}` : "";
-    return this.request(`/posts${params}`);
-  }
-}
+    return {
+      getPost: (postId: string) => makeRequest(baseUrl, apiToken, `/posts/${postId}`),
+
+      updatePost: (postId: string, content: string) =>
+        makeRequest(baseUrl, apiToken, `/posts/${postId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ content }),
+        }),
+
+      searchPosts: (query: string) => {
+        const params = new URLSearchParams({ query });
+        return makeRequest(baseUrl, apiToken, `/search?${params}`);
+      },
+
+      listPosts: (topicId?: string) => {
+        const params = topicId ? `?topic_id=${topicId}` : "";
+        return makeRequest(baseUrl, apiToken, `/posts${params}`);
+      },
+    };
+  })
+);

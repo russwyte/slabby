@@ -1,21 +1,40 @@
 import { test, expect, describe, mock, beforeEach, afterEach } from "bun:test";
-import { SlabClient } from "../src/client.ts";
+import { Effect, Layer, Context } from "effect";
+import type { SlabClientService } from "../src/client.ts";
+import { SlabClientServiceLive } from "../src/client.ts";
+import type { ConfigService } from "../src/config.ts";
 
 // Mock the global fetch function
 const mockFetch = mock();
 
-describe("SlabClient", () => {
-  let client: SlabClient;
-  const originalFetch = global.fetch;
-
-  beforeEach(() => {
-    client = new SlabClient({
-      token: "test-token",
+// Create a test config layer
+const TestConfigLayer = Layer.succeed(
+  Context.GenericTag<ConfigService>("@services/ConfigService"),
+  {
+    config: {
+      apiToken: "test-token",
+      team: "test",
       baseUrl: "https://test.slab.com/api/v1",
-    });
+    },
+  }
+);
 
+describe("SlabClient with Effect", () => {
+  const originalFetch = global.fetch;
+  let client: SlabClientService;
+
+  beforeEach(async () => {
     // Replace global fetch with our mock
     global.fetch = mockFetch as any;
+
+    // Build the client with test config
+    const program = Effect.gen(function* () {
+      return yield* Context.GenericTag<SlabClientService>("@services/SlabClientService");
+    });
+
+    client = await Effect.runPromise(
+      program.pipe(Effect.provide(SlabClientServiceLive.pipe(Layer.provide(TestConfigLayer))))
+    );
   });
 
   afterEach(() => {
@@ -40,7 +59,7 @@ describe("SlabClient", () => {
         json: async () => mockPost,
       });
 
-      const result = await client.getPost("123");
+      const result = await Effect.runPromise(client.getPost("123"));
 
       expect(result).toEqual(mockPost);
       expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -55,14 +74,18 @@ describe("SlabClient", () => {
       );
     });
 
-    test("should throw error on failed request", async () => {
+    test("should fail on failed request", async () => {
       mockFetch.mockResolvedValue({
         ok: false,
         status: 404,
         text: async () => "Not Found",
       });
 
-      await expect(client.getPost("nonexistent")).rejects.toThrow("Slab API error (404): Not Found");
+      const result = await Effect.runPromise(client.getPost("nonexistent").pipe(Effect.either));
+      expect(result._tag).toBe("Left");
+      if (result._tag === "Left") {
+        expect(result.left.message).toContain("Slab API error (404): Not Found");
+      }
     });
   });
 
@@ -82,7 +105,7 @@ describe("SlabClient", () => {
         json: async () => mockUpdatedPost,
       });
 
-      const result = await client.updatePost("123", "Updated content");
+      const result = await Effect.runPromise(client.updatePost("123", "Updated content"));
 
       expect(result).toEqual(mockUpdatedPost);
       expect(mockFetch).toHaveBeenCalledWith(
@@ -119,7 +142,7 @@ describe("SlabClient", () => {
         json: async () => mockSearchResults,
       });
 
-      const result = await client.searchPosts("test query");
+      const result = await Effect.runPromise(client.searchPosts("test query"));
 
       expect(result).toEqual(mockSearchResults);
       expect(mockFetch).toHaveBeenCalledWith(
@@ -149,7 +172,7 @@ describe("SlabClient", () => {
         json: async () => mockPosts,
       });
 
-      const result = await client.listPosts();
+      const result = await Effect.runPromise(client.listPosts());
 
       expect(result).toEqual(mockPosts);
       expect(mockFetch).toHaveBeenCalledWith(
@@ -177,7 +200,7 @@ describe("SlabClient", () => {
         json: async () => mockPosts,
       });
 
-      const result = await client.listPosts("topic-123");
+      const result = await Effect.runPromise(client.listPosts("topic-123"));
 
       expect(result).toEqual(mockPosts);
       expect(mockFetch).toHaveBeenCalledWith(

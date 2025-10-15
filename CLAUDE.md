@@ -104,3 +104,6 @@ bun --hot ./index.ts
 ```
 
 For more information, read the Bun API docs in `node_modules/bun-types/docs/**.md`.
+## Git/Github
+- don't mention yourself in commit messages
+- don't mention yourself in any documentation

@@ -19,10 +19,11 @@
 /**
  * Slabby - MCP Server for Slab Knowledge Base Integration
  *
- * Enables Claude Code to read and update Slab documentation.
+ * Enables AI coding agents to read and update Slab documentation.
  * All edits are attributed to the user who owns the API token.
  */
 
+import { Effect, Layer } from "effect";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -30,198 +31,208 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { SlabClient } from "./client.ts";
+import { ConfigService, ConfigServiceLive } from "./config.ts";
+import { SlabClientService, SlabClientServiceLive } from "./client.ts";
 import { formatPostResponse, formatSearchResults, formatListResults } from "./formatters.ts";
 import { extractPostId } from "./utils.ts";
 
-// Environment configuration
-const SLAB_API_TOKEN = process.env.SLAB_API_TOKEN;
-const SLAB_TEAM = process.env.SLAB_TEAM;
+/**
+ * The main application layer combining all services
+ */
+const AppLayer = Layer.mergeAll(ConfigServiceLive, SlabClientServiceLive.pipe(Layer.provide(ConfigServiceLive)));
 
-if (!SLAB_API_TOKEN) {
-  console.error("Error: SLAB_API_TOKEN environment variable is required");
-  process.exit(1);
-}
+/**
+ * Define MCP tool handlers using Effect
+ */
+const toolHandlers = {
+  "slab__get_post": (args: any) =>
+    Effect.gen(function* () {
+      const client = yield* SlabClientService;
+      const postId = yield* extractPostId(args.postId as string);
+      const post = yield* client.getPost(postId);
+      return formatPostResponse(post);
+    }),
 
-if (!SLAB_TEAM) {
-  console.error("Error: SLAB_TEAM environment variable is required");
-  process.exit(1);
-}
+  "slab__update_post": (args: any) =>
+    Effect.gen(function* () {
+      const client = yield* SlabClientService;
+      const postId = yield* extractPostId(args.postId as string);
+      const result = yield* client.updatePost(postId, args.content as string);
+      return `Post updated successfully: ${JSON.stringify(result, null, 2)}`;
+    }),
 
-const SLAB_API_BASE = `https://${SLAB_TEAM}.slab.com/api/v1`;
+  "slab__search": (args: any) =>
+    Effect.gen(function* () {
+      const client = yield* SlabClientService;
+      const query = args.query as string;
+      const results = yield* client.searchPosts(query);
+      return formatSearchResults(results, query);
+    }),
 
-// Initialize Slab client
-const slab = new SlabClient({
-  token: SLAB_API_TOKEN,
-  baseUrl: SLAB_API_BASE,
-});
+  "slab__list_posts": (args: any) =>
+    Effect.gen(function* () {
+      const client = yield* SlabClientService;
+      const posts = yield* client.listPosts(args.topicId as string | undefined);
+      return formatListResults(posts);
+    }),
+};
 
-// Create MCP server
-const server = new Server(
-  {
-    name: "slabby",
-    version: "0.1.0",
-  },
-  {
-    capabilities: {
-      tools: {},
+/**
+ * Create and configure the MCP server
+ */
+function createServer() {
+  const server = new Server(
+    {
+      name: "slabby",
+      version: "0.1.0",
     },
-  }
-);
-
-// Register tool handlers
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: "slab__get_post",
-        description: "Fetch a Slab post by ID or URL. Returns the post content in markdown format.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            postId: {
-              type: "string",
-              description: "The Slab post ID or full post URL (e.g., 'abc123' or 'https://team.slab.com/posts/abc123')",
-            },
-          },
-          required: ["postId"],
-        },
+    {
+      capabilities: {
+        tools: {},
       },
-      {
-        name: "slab__update_post",
-        description: "Update a Slab post with new content. Edits will be attributed to your user account.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            postId: {
-              type: "string",
-              description: "The Slab post ID or full post URL",
-            },
-            content: {
-              type: "string",
-              description: "The new content for the post in markdown format",
-            },
-          },
-          required: ["postId", "content"],
-        },
-      },
-      {
-        name: "slab__search",
-        description: "Search for posts across your Slab workspace",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: {
-              type: "string",
-              description: "Search query string",
-            },
-          },
-          required: ["query"],
-        },
-      },
-      {
-        name: "slab__list_posts",
-        description: "List posts in your Slab workspace, optionally filtered by topic",
-        inputSchema: {
-          type: "object",
-          properties: {
-            topicId: {
-              type: "string",
-              description: "Optional topic ID to filter posts",
-            },
-          },
-        },
-      },
-    ],
-  };
-});
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
-  if (!args) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: "Error: Missing required arguments",
-        },
-      ],
-      isError: true,
-    };
-  }
-
-  try {
-    switch (name) {
-      case "slab__get_post": {
-        const postId = extractPostId(args.postId as string);
-        const post = await slab.getPost(postId);
-        return {
-          content: [
-            {
-              type: "text",
-              text: formatPostResponse(post),
-            },
-          ],
-        };
-      }
-
-      case "slab__update_post": {
-        const postId = extractPostId(args.postId as string);
-        const result = await slab.updatePost(postId, args.content as string);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Post updated successfully: ${JSON.stringify(result, null, 2)}`,
-            },
-          ],
-        };
-      }
-
-      case "slab__search": {
-        const query = args.query as string;
-        const results = await slab.searchPosts(query);
-        return {
-          content: [
-            {
-              type: "text",
-              text: formatSearchResults(results, query),
-            },
-          ],
-        };
-      }
-
-      case "slab__list_posts": {
-        const posts = await slab.listPosts(args.topicId as string | undefined);
-        return {
-          content: [
-            {
-              type: "text",
-              text: formatListResults(posts),
-            },
-          ],
-        };
-      }
-
-      default:
-        throw new Error(`Unknown tool: ${name}`);
     }
-  } catch (error) {
+  );
+
+  // Register tool list handler
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    return {
+      tools: [
+        {
+          name: "slab__get_post",
+          description: "Fetch a Slab post by ID or URL. Returns the post content in markdown format.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              postId: {
+                type: "string",
+                description: "The Slab post ID or full post URL (e.g., 'abc123' or 'https://team.slab.com/posts/abc123')",
+              },
+            },
+            required: ["postId"],
+          },
+        },
+        {
+          name: "slab__update_post",
+          description: "Update a Slab post with new content. Edits will be attributed to your user account.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              postId: {
+                type: "string",
+                description: "The Slab post ID or full post URL",
+              },
+              content: {
+                type: "string",
+                description: "The new content for the post in markdown format",
+              },
+            },
+            required: ["postId", "content"],
+          },
+        },
+        {
+          name: "slab__search",
+          description: "Search for posts across your Slab workspace",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: {
+                type: "string",
+                description: "Search query string",
+              },
+            },
+            required: ["query"],
+          },
+        },
+        {
+          name: "slab__list_posts",
+          description: "List posts in your Slab workspace, optionally filtered by topic",
+          inputSchema: {
+            type: "object",
+            properties: {
+              topicId: {
+                type: "string",
+                description: "Optional topic ID to filter posts",
+              },
+            },
+          },
+        },
+      ],
+    };
+  });
+
+  // Register tool call handler
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+
+    if (!args) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Error: Missing required arguments",
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    // Get the handler for this tool
+    const handler = toolHandlers[name as keyof typeof toolHandlers];
+    if (!handler) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: Unknown tool: ${name}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    // Run the Effect with the app layer and handle errors
+    const result = await Effect.runPromise(
+      handler(args).pipe(
+        Effect.provide(AppLayer),
+        Effect.catchAll((error) =>
+          Effect.succeed(`Error: ${error.message || String(error)}`)
+        )
+      )
+    );
+
     return {
       content: [
         {
           type: "text",
-          text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+          text: result,
         },
       ],
-      isError: true,
     };
-  }
-});
+  });
 
-// Start the server
+  return server;
+}
+
+/**
+ * Start the MCP server
+ */
 async function main() {
+  // Validate configuration first by loading it
+  const configProgram = Effect.gen(function* () {
+    const { config } = yield* ConfigService;
+    return config;
+  }).pipe(Effect.provide(ConfigServiceLive), Effect.either);
+
+  const configResult = await Effect.runPromise(configProgram);
+
+  if (configResult._tag === "Left") {
+    const error = configResult.left as any;
+    console.error("Configuration error:", error.message || String(error));
+    process.exit(1);
+  }
+
+  // Create and start the server
+  const server = createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Slabby MCP server running on stdio");
