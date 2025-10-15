@@ -1,6 +1,7 @@
 # 🧱 Slabby
 
 [![npm version](https://badge.fury.io/js/@russwyte%2Fslabby.svg)](https://badge.fury.io/js/@russwyte%2Fslabby)
+[![Tests](https://github.com/russwyte/slabby/actions/workflows/test.yml/badge.svg)](https://github.com/russwyte/slabby/actions/workflows/test.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 **MCP server for Slab knowledge base integration with AI coding agents**
