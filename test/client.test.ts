@@ -19,7 +19,7 @@ const TestConfigLayer = Layer.succeed(
   }
 );
 
-describe("SlabClient with GraphQL", () => {
+describe("SlabClient with GraphQL (Verified Schema)", () => {
   const originalFetch = global.fetch;
   let client: SlabClientService;
 
@@ -44,16 +44,22 @@ describe("SlabClient with GraphQL", () => {
   });
 
   describe("getPost", () => {
-    test("should fetch a post by ID using GraphQL", async () => {
+    test("should fetch a post by ID using GraphQL with actual schema", async () => {
       const mockGraphQLResponse = {
         data: {
           post: {
             id: "123",
             title: "Test Post",
-            content: "Test content",
-            url: "https://test.slab.com/posts/123",
-            createdAt: "2024-01-01T00:00:00Z",
+            content: [{ insert: "Test content" }, { insert: "\n\n" }], // Quill Delta format
+            insertedAt: "2024-01-01T00:00:00Z",
             updatedAt: "2024-01-02T00:00:00Z",
+            publishedAt: "2024-01-01T00:00:00Z",
+            archivedAt: null,
+            owner: {
+              id: "user1",
+              name: "Test User",
+              email: "test@example.com",
+            },
           },
         },
       };
@@ -67,6 +73,7 @@ describe("SlabClient with GraphQL", () => {
 
       expect(result.id).toBe("123");
       expect(result.title).toBe("Test Post");
+      expect(result.content).toBe("Test content\n\n"); // Converted from Delta
       expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(mockFetch).toHaveBeenCalledWith(
         "https://api.slab.com/v1/graphql",
@@ -112,56 +119,86 @@ describe("SlabClient with GraphQL", () => {
   });
 
   describe("updatePost", () => {
-    test("should update a post with new content using GraphQL", async () => {
-      const mockGraphQLResponse = {
+    test("should update a post using Delta format", async () => {
+      // First call: get current post
+      const mockGetResponse = {
         data: {
-          updatePost: {
-            post: {
-              id: "123",
-              title: "Test Post",
-              content: "Updated content",
-              url: "https://test.slab.com/posts/123",
-              createdAt: "2024-01-01T00:00:00Z",
-              updatedAt: "2024-01-03T00:00:00Z",
-            },
+          post: {
+            id: "123",
+            title: "Test Post",
+            content: [{ insert: "Old content" }, { insert: "\n\n" }],
+            insertedAt: "2024-01-01T00:00:00Z",
+            updatedAt: "2024-01-02T00:00:00Z",
           },
         },
       };
 
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: async () => mockGraphQLResponse,
-      });
+      // Second call: update post content
+      const mockUpdateResponse = {
+        data: {
+          updatePostContent: {
+            id: "123",
+            title: "Test Post",
+            content: [{ insert: "Updated content" }, { insert: "\n\n" }],
+            updatedAt: "2024-01-03T00:00:00Z",
+          },
+        },
+      };
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => mockGetResponse,
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => mockUpdateResponse,
+        });
 
       const result = await Effect.runPromise(client.updatePost("123", "Updated content"));
 
-      expect(result.content).toBe("Updated content");
-      expect(mockFetch).toHaveBeenCalledWith(
-        "https://api.slab.com/v1/graphql",
-        expect.objectContaining({
-          method: "POST",
-          body: expect.stringContaining("UpdatePost"),
-        })
-      );
+      expect(result.content).toBe("Updated content\n\n");
+      expect(mockFetch).toHaveBeenCalledTimes(2); // GET then UPDATE
+
+      // Check that the second call uses updatePostContent mutation
+      const secondCall = mockFetch.mock.calls[1];
+      const body = JSON.parse(secondCall?.[1]?.body);
+      expect(body.query).toContain("UpdatePostContent");
+      expect(body.variables.delta.ops).toBeDefined();
     });
   });
 
   describe("searchPosts", () => {
-    test("should search posts with a query using GraphQL", async () => {
+    test("should search posts using cursor pagination", async () => {
       const mockGraphQLResponse = {
         data: {
           search: {
-            posts: [
+            pageInfo: {
+              hasNextPage: false,
+              hasPreviousPage: false,
+              startCursor: "cursor1",
+              endCursor: "cursor2",
+            },
+            edges: [
               {
-                id: "1",
-                title: "Result 1",
-                content: "Content",
-                url: "https://test.slab.com/posts/1",
-                createdAt: "2024-01-01T00:00:00Z",
-                updatedAt: "2024-01-02T00:00:00Z",
+                cursor: "cursor1",
+                node: {
+                  title: "Result 1",
+                  post: {
+                    id: "1",
+                    title: "Result 1",
+                    content: [{ insert: "Content 1" }, { insert: "\n\n" }],
+                    insertedAt: "2024-01-01T00:00:00Z",
+                    publishedAt: "2024-01-01T00:00:00Z",
+                    owner: {
+                      id: "user1",
+                      name: "Test User",
+                      email: "test@example.com",
+                    },
+                  },
+                },
               },
             ],
-            totalCount: 1,
           },
         },
       };
@@ -186,21 +223,22 @@ describe("SlabClient with GraphQL", () => {
   });
 
   describe("listPosts", () => {
-    test("should list all posts when no topic ID is provided using GraphQL", async () => {
+    test("should list all posts from organization when no topic ID provided", async () => {
       const mockGraphQLResponse = {
         data: {
-          posts: {
-            items: [
+          organization: {
+            id: "org1",
+            posts: [
               {
                 id: "1",
                 title: "Post 1",
-                content: "Content",
-                url: "https://test.slab.com/posts/1",
-                createdAt: "2024-01-01T00:00:00Z",
-                updatedAt: "2024-01-02T00:00:00Z",
+                content: [{ insert: "Content" }, { insert: "\n\n" }],
+                insertedAt: "2024-01-01T00:00:00Z",
+                publishedAt: "2024-01-01T00:00:00Z",
+                linkAccess: "INTERNAL",
+                topics: [{ id: "topic1", name: "General" }],
               },
             ],
-            totalCount: 1,
           },
         },
       };
@@ -217,25 +255,32 @@ describe("SlabClient with GraphQL", () => {
         "https://api.slab.com/v1/graphql",
         expect.objectContaining({
           method: "POST",
+          body: expect.stringContaining("GetOrganizationPosts"),
         })
       );
     });
 
-    test("should list posts filtered by topic ID using GraphQL", async () => {
+    test("should list posts from a specific topic", async () => {
       const mockGraphQLResponse = {
         data: {
-          posts: {
-            items: [
+          topic: {
+            id: "topic-123",
+            name: "Engineering",
+            posts: [
               {
                 id: "1",
                 title: "Post 1",
-                content: "Content",
-                url: "https://test.slab.com/posts/1",
-                createdAt: "2024-01-01T00:00:00Z",
-                updatedAt: "2024-01-02T00:00:00Z",
+                content: [{ insert: "Content" }, { insert: "\n\n" }],
+                insertedAt: "2024-01-01T00:00:00Z",
+                publishedAt: "2024-01-01T00:00:00Z",
+                linkAccess: "INTERNAL",
+                owner: {
+                  id: "user1",
+                  name: "Test User",
+                  email: "test@example.com",
+                },
               },
             ],
-            totalCount: 1,
           },
         },
       };
@@ -249,6 +294,7 @@ describe("SlabClient with GraphQL", () => {
 
       expect(result.posts).toHaveLength(1);
       const body = JSON.parse(mockFetch.mock.calls[0]?.[1]?.body);
+      expect(body.query).toContain("GetTopicPosts");
       expect(body.variables.topicId).toBe("topic-123");
     });
   });

@@ -1,0 +1,425 @@
+schema {
+ mutation: RootMutationType
+ query: RootQueryType
+}
+
+directive @constraints(
+ "Pattern to match for a string"
+ regex: String
+
+ "Maximum number of items allowed in a list"
+ maxItems: Int
+
+ "Minimum number of items allowed in a list"
+ minItems: Int
+
+ "Maximum value allowed"
+ max: Int
+
+ "Minimum value allowed"
+ min: Int
+) on ARGUMENT_DEFINITION | FIELD_DEFINITION
+
+type RootQueryType {
+ organization: Organization
+
+ user(id: ID!): User
+
+ post(id: ID!): Post
+
+ posts(ids: [ID!]! @constraints(minItems: 1, maxItems: 100)): [Post!]!
+
+ topic(id: ID!): Topic
+
+ topics(ids: [ID!]! @constraints(minItems: 1, maxItems: 100)): [Topic!]!
+
+ "Search results follow the common [cursor-based pagination pattern](https:\/\/graphql.org\/learn\/pagination\/#pagination-and-edges)."
+ search(after: String, first: Int, before: String, last: Int, query: String!, types: [SearchType!]): SearchResultConnection
+}
+
+type RootMutationType {
+ "Creates a new blank post, optionally organized in given `topicId`."
+ createPost(title: String, topicId: ID, templateId: ID): Post
+
+ "Updates an existing post."
+ updatePost(id: ID!, ownerId: ID, archived: Boolean, published: Boolean, linkAccess: PostLinkAccess, bannerUrl: String): Post
+
+ "Updates post content."
+ updatePostContent(
+ id: ID!
+
+ """
+ Expected to be in [delta format](https://quilljs.com/docs/delta/). Here's an
+ example of what it can look like:
+
+ Original post content:
+
+ ```json
+ [
+ {"insert": "Post Title\nHello Draft"},
+ {"insert": "\n\n"}
+ ]
+ ```
+
+ Update delta:
+
+ ```json
+ {
+ "ops": [
+ {"retain": 17},
+ {"delete": 5},
+ {"insert": "World"}
+ ]
+ }
+ ```
+
+ Updated content:
+
+ ```json
+ [
+ {"insert": "Post Title\nHello World"},
+ {"insert": "\n\n"}
+ ]
+ ```
+ """
+ delta: Json!
+ ): Post
+
+ """
+ Creates or updates a post on Slab that is a readonly copy of a post stored
+ externally. The `editUrl` and `readUrl` are links to the externally stored
+ source and will be shown and linked in some parts of the Slab UI. Upon creation,
+ at least the `editUrl` must be supplied. If no `readUrl` is supplied upon
+ creation, the `editUrl` is used.
+ """
+ syncPost(externalId: ID!, format: PostContentFormat!, content: String!, editUrl: String, readUrl: String): Post
+
+ "Deletes a post with given `id`."
+ deletePost(id: ID!): Post
+
+ createTopic(
+ name: String!, description: Json, parentId: ID, memberEditable: TopicMemberEditable, privacy: TopicPrivacy, inheritParent: Boolean
+ ): Topic
+
+ "Updates an existing topic."
+ updateTopic(
+ id: ID!
+
+ name: String
+
+ description: Json
+
+ parentId: ID
+
+ memberEditable: TopicMemberEditable
+
+ privacy: TopicPrivacy
+
+ bannerUrl: String
+
+ """
+ Defines whether owners and members of the parent topic should be also considered
+ as owners and members of this topic.
+ """
+ inheritParent: Boolean
+
+ "If `true` privacy change will propagate to subtopics."
+ propagatePrivacy: Boolean
+ ): Topic
+
+ addTopicToPost(postId: ID!, topicId: ID!): Topic
+
+ removeTopicFromPost(postId: ID!, topicId: ID!): Topic
+
+ deleteTopic(id: ID!): Topic
+
+ """
+ Performs a full export of all organization's posts in Markdown (.md) or Word
+ (.docx) format.
+
+ Export takes some time to complete, so the archive might not be immediately
+ available for download.
+ """
+ exportAll(
+ format: ExportFormat!
+
+ "Defines an export scope."
+ privacy: ExportPrivacy!
+ ): ExportResult!
+}
+
+enum ExportFormat {
+ MARKDOWN
+ DOCX
+}
+
+enum ExportPrivacy {
+ "Includes only open and public posts."
+ OPEN
+
+ """
+ Adds all private posts to the scope, even from the topics the current user
+ is not a member of
+ """
+ PRIVATE
+
+ """
+ Same as `PRIVATE` but will also include secret topics that the caller has access
+ to.
+ """
+ SECRET
+}
+
+type ExportResult {
+ "URL for a zip archive."
+ url: String!
+}
+
+union SearchResult = PostSearchResult | TopicSearchResult | UserSearchResult | CommentSearchResult
+
+type SearchResultConnection {
+ pageInfo: PageInfo!
+ edges: [SearchResultEdge]
+}
+
+type PostSearchResult {
+ title: String
+ highlight: Json
+ content: Json
+ post: Post!
+}
+
+type CommentSearchResult {
+ content: Json
+ comment: Comment!
+}
+
+type TopicSearchResult {
+ name: String
+ description: Json
+ topic: Topic!
+}
+
+type UserSearchResult {
+ name: String
+ title: String
+ description: Json
+ user: User!
+}
+
+enum SearchType {
+ POST
+ COMMENT
+ TOPIC
+ USER
+}
+
+enum PostContentFormat {
+ HTML
+ MARKDOWN
+}
+
+enum PostLinkAccess {
+ INTERNAL
+ INTERNAL_VIEW
+ PUBLIC
+ PUBLIC_EDIT
+ DISABLED
+}
+
+enum TopicPrivacy {
+ OPEN
+ PRIVATE
+ SECRET
+ PUBLIC
+}
+
+enum TopicMemberEditable {
+ ALL
+ POST
+ NONE
+}
+
+interface SlimPostFields {
+ id: ID!
+ linkAccess: PostLinkAccess!
+ archivedAt: Datetime
+ publishedAt: Datetime
+ title: String!
+ topics: [SlimTopicFields!]!
+}
+
+"""
+A stripped-down version of Post. It's optimized for queries that fetch a
+non-paginated list of posts.
+"""
+type SlimPost implements SlimPostFields {
+ id: ID!
+ linkAccess: PostLinkAccess!
+ archivedAt: Datetime
+ publishedAt: Datetime
+ title: String!
+ topics: [SlimTopic!]!
+}
+
+type Post implements SlimPostFields {
+ id: ID!
+
+ linkAccess: PostLinkAccess!
+
+ archivedAt: Datetime
+
+ publishedAt: Datetime
+
+ title: String!
+
+ insertedAt: Datetime!
+
+ """
+ Posts are stored in a JSON format that can express both state and changes to
+ state, however only the state is relevant in the current API. Example:
+
+ ```javascript
+ [
+ { insert: 'Gandalf', attributes: { bold: true } },
+ { insert: ' the ' },
+ { insert: 'Grey', attributes: { italic: true } }
+ ]
+ ```
+
+ Attributes express formatting applied to the given string insert. Object inserts
+ are used to express embeds such as images:
+
+ ```javascript
+ [{
+ insert: {
+ image: 'https://slab.com/images/icon.png'
+ }
+ }]
+ ```
+
+ Attributes associated with a newline character describes formatting for that
+ line.
+
+ ```javascript
+ [
+ { insert: 'The Two Towers' },
+ { insert: '\n', attributes: { header: 1 } },
+ { insert: 'Aragorn sped on up the hill.\n' }
+ ]
+ ```
+ """
+ content: Json!
+
+ updatedAt: Datetime!
+
+ version: Int!
+
+ banner: Image!
+
+ owner: User!
+
+ topics: [Topic!]!
+}
+
+interface SlimTopicFields {
+ id: ID!
+}
+
+type SlimTopic implements SlimTopicFields {
+ id: ID!
+}
+
+type Topic implements SlimTopicFields {
+ id: ID!
+ name: String!
+ description: Json!
+ insertedAt: Datetime!
+ updatedAt: Datetime!
+ privacy: TopicPrivacy!
+ memberEditable: TopicMemberEditable!
+ inheritParent: Boolean!
+ children: [Topic!]!
+ parent: Topic
+ ancestors: [Topic!]!
+ posts: [Post!]!
+ banner: Image!
+ owners: [User!]!
+ members: [User!]!
+ ownerGroups: [Group!]!
+ memberGroups: [Group!]!
+ hierarchy: [ID]
+}
+
+type Comment {
+ id: ID!
+ content: Json!
+ insertedAt: Datetime!
+ author: User!
+}
+
+type Organization {
+ id: ID!
+ name: String!
+ host: String!
+ insertedAt: Datetime!
+ updatedAt: Datetime!
+ topics: [Topic!]!
+ posts: [SlimPost!]!
+ users(includeDeactivated: Boolean): [User!]!
+}
+
+type User {
+ id: ID!
+ name: String!
+ title: String!
+ email: String!
+ description: Json!
+ type: String!
+ deactivatedAt: Datetime
+ insertedAt: Datetime!
+ updatedAt: Datetime!
+ avatar: Image
+}
+
+type Group {
+ id: ID!
+ name: String!
+ insertedAt: Datetime!
+ updatedAt: Datetime!
+ description: Json!
+ children: [Group!]!
+ parents: [Group!]!
+ members: [User!]!
+ owners: [User!]!
+ membershipTopics: [Topic!]!
+}
+
+scalar Json
+
+scalar Datetime
+
+type Image {
+ original: String
+ thumb: String
+ preset: String
+}
+
+type PageInfo {
+ "When paginating backwards, are there more items?"
+ hasPreviousPage: Boolean!
+
+ "When paginating forwards, are there more items?"
+ hasNextPage: Boolean!
+
+ "When paginating backwards, the cursor to continue."
+ startCursor: String
+
+ "When paginating forwards, the cursor to continue."
+ endCursor: String
+}
+
+type SearchResultEdge {
+ node: SearchResult
+ cursor: String
+}
