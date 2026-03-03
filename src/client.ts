@@ -30,6 +30,7 @@ import {
   GET_TOPIC_POSTS_QUERY,
   GET_ORGANIZATION_POSTS_QUERY,
 } from "./graphql.ts";
+import { contentToMarkdown } from "./deltaToMarkdown.ts";
 
 /**
  * Error types for Slab API operations
@@ -145,22 +146,6 @@ const makeGraphQLRequest = <T>(
   });
 
 /**
- * Convert Quill Delta JSON content to plain text
- * Slab stores content in Quill Delta format
- */
-const deltaToPlainText = (delta: any): string => {
-  if (!delta || !Array.isArray(delta)) return "";
-  return delta
-    .map((op: any) => {
-      if (typeof op.insert === "string") {
-        return op.insert;
-      }
-      return "";
-    })
-    .join("");
-};
-
-/**
  * Create a delta operation to replace all content
  * First deletes everything, then inserts new content
  */
@@ -189,8 +174,8 @@ const createReplacementDelta = (currentContent: any, newText: string): any => {
  * Uses actual Slab schema field names: insertedAt, publishedAt, owner
  */
 const transformPost = (post: any): SlabPost => {
-  // Convert Delta JSON content to plain text for easier consumption
-  const contentText = typeof post.content === "string" ? post.content : deltaToPlainText(post.content);
+  // Convert Delta JSON content to Markdown for proper formatting
+  const contentText = contentToMarkdown(post.content);
 
   return {
     id: post.id,
