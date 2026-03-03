@@ -102,8 +102,8 @@ const makeGraphQLRequest = <T>(
         fetch(apiUrl, {
           method: "POST",
           headers: {
-            // Slab uses "Authorization: token <TOKEN>" not "Bearer"
-            Authorization: `token ${token}`,
+            // Slab API accepts "Authorization: Bearer <TOKEN>"
+            Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify(request),
