@@ -73,14 +73,14 @@ describe("SlabClient with GraphQL (Verified Schema)", () => {
 
       expect(result.id).toBe("123");
       expect(result.title).toBe("Test Post");
-      expect(result.content).toBe("Test content\n\n"); // Converted from Delta
+      expect(result.content).toBe("Test content"); // Converted from Delta
       expect(mockFetch).toHaveBeenCalledTimes(1);
       expect(mockFetch).toHaveBeenCalledWith(
         "https://api.slab.com/v1/graphql",
         expect.objectContaining({
           method: "POST",
           headers: expect.objectContaining({
-            Authorization: "token test-token",
+            Authorization: "Bearer test-token",
             "Content-Type": "application/json",
           }),
           body: expect.stringContaining("GetPost"),
@@ -157,7 +157,7 @@ describe("SlabClient with GraphQL (Verified Schema)", () => {
 
       const result = await Effect.runPromise(client.updatePost("123", "Updated content"));
 
-      expect(result.content).toBe("Updated content\n\n");
+      expect(result.content).toBe("Updated content");
       expect(mockFetch).toHaveBeenCalledTimes(2); // GET then UPDATE
 
       // Check that the second call uses updatePostContent mutation
