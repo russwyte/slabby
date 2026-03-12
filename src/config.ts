@@ -18,15 +18,11 @@
  * Configuration service using Effect Context
  */
 
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Data } from "effect";
 
-/**
- * Error types for configuration
- */
-export class ConfigError {
-  readonly _tag = "ConfigError";
-  constructor(readonly message: string) {}
-}
+export class ConfigError extends Data.TaggedError("ConfigError")<{
+  readonly message: string;
+}> {}
 
 /**
  * Slab configuration
@@ -58,11 +54,11 @@ export const loadConfig = (): Effect.Effect<SlabConfig, ConfigError> =>
     const team = process.env.SLAB_TEAM;
 
     if (!apiToken) {
-      return yield* Effect.fail(new ConfigError("SLAB_API_TOKEN environment variable is required"));
+      return yield* Effect.fail(new ConfigError({ message: "SLAB_API_TOKEN environment variable is required" }));
     }
 
     if (!team) {
-      return yield* Effect.fail(new ConfigError("SLAB_TEAM environment variable is required"));
+      return yield* Effect.fail(new ConfigError({ message: "SLAB_TEAM environment variable is required" }));
     }
 
     return {

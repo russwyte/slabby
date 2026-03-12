@@ -222,6 +222,211 @@ describe("SlabClient with GraphQL (Verified Schema)", () => {
     });
   });
 
+  describe("getPost edge cases", () => {
+    test("should handle post with no owner", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: {
+            post: {
+              id: "456",
+              title: "Orphan Post",
+              content: [{ insert: "Content" }, { insert: "\n\n" }],
+              insertedAt: "2024-01-01T00:00:00Z",
+              updatedAt: "2024-01-02T00:00:00Z",
+            },
+          },
+        }),
+      });
+
+      const result = await Effect.runPromise(client.getPost("456"));
+      expect(result.id).toBe("456");
+      expect(result.created_by).toBeUndefined();
+    });
+
+    test("should handle post with string content", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: {
+            post: {
+              id: "789",
+              title: "String Content Post",
+              content: "Already a string",
+              insertedAt: "2024-01-01T00:00:00Z",
+              updatedAt: "2024-01-02T00:00:00Z",
+            },
+          },
+        }),
+      });
+
+      const result = await Effect.runPromise(client.getPost("789"));
+      expect(result.content).toBe("Already a string");
+    });
+
+    test("should handle post with null content", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: {
+            post: {
+              id: "000",
+              title: "Empty Post",
+              content: null,
+              insertedAt: "2024-01-01T00:00:00Z",
+              updatedAt: "2024-01-02T00:00:00Z",
+            },
+          },
+        }),
+      });
+
+      const result = await Effect.runPromise(client.getPost("000"));
+      expect(result.content).toBe("");
+    });
+
+    test("should handle post with empty delta array", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: {
+            post: {
+              id: "empty",
+              title: "Empty Delta",
+              content: [],
+              insertedAt: "2024-01-01T00:00:00Z",
+              updatedAt: "2024-01-02T00:00:00Z",
+            },
+          },
+        }),
+      });
+
+      const result = await Effect.runPromise(client.getPost("empty"));
+      expect(result.content).toBe("");
+    });
+
+    test("should fail when response has no data field", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({}),
+      });
+
+      const result = await Effect.runPromise(client.getPost("123").pipe(Effect.either));
+      expect(result._tag).toBe("Left");
+      if (result._tag === "Left") {
+        expect(result.left._tag).toBe("SlabApiError");
+        expect(result.left.message).toContain("missing data field");
+      }
+    });
+
+    test("should fail on network error", async () => {
+      mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+
+      const result = await Effect.runPromise(client.getPost("123").pipe(Effect.either));
+      expect(result._tag).toBe("Left");
+      if (result._tag === "Left") {
+        expect(result.left._tag).toBe("SlabNetworkError");
+      }
+    });
+
+    test("should fail on multiple GraphQL errors", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          errors: [
+            { message: "First error" },
+            { message: "Second error" },
+          ],
+        }),
+      });
+
+      const result = await Effect.runPromise(client.getPost("123").pipe(Effect.either));
+      expect(result._tag).toBe("Left");
+      if (result._tag === "Left") {
+        expect(result.left.message).toContain("First error");
+        expect(result.left.message).toContain("Second error");
+      }
+    });
+  });
+
+  describe("searchPosts edge cases", () => {
+    test("should handle empty search results", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: {
+            search: {
+              pageInfo: { hasNextPage: false, hasPreviousPage: false },
+              edges: [],
+            },
+          },
+        }),
+      });
+
+      const result = await Effect.runPromise(client.searchPosts("nonexistent"));
+      expect(result.posts).toHaveLength(0);
+      expect(result.total_count).toBe(0);
+    });
+
+    test("should skip edges with null nodes or missing post", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: {
+            search: {
+              pageInfo: { hasNextPage: false, hasPreviousPage: false },
+              edges: [
+                { cursor: "c1", node: null },
+                { cursor: "c2", node: { title: "No post field" } },
+              ],
+            },
+          },
+        }),
+      });
+
+      const result = await Effect.runPromise(client.searchPosts("test"));
+      expect(result.posts).toHaveLength(0);
+    });
+  });
+
+  describe("listPosts edge cases", () => {
+    test("should handle empty topic posts", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: {
+            topic: {
+              id: "topic-empty",
+              name: "Empty Topic",
+              posts: [],
+            },
+          },
+        }),
+      });
+
+      const result = await Effect.runPromise(client.listPosts("topic-empty"));
+      expect(result.posts).toHaveLength(0);
+      expect(result.total_count).toBe(0);
+    });
+
+    test("should handle empty organization posts", async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: {
+            organization: {
+              id: "org1",
+              posts: [],
+            },
+          },
+        }),
+      });
+
+      const result = await Effect.runPromise(client.listPosts());
+      expect(result.posts).toHaveLength(0);
+      expect(result.total_count).toBe(0);
+    });
+  });
+
   describe("listPosts", () => {
     test("should list all posts from organization when no topic ID provided", async () => {
       const mockGraphQLResponse = {

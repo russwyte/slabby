@@ -20,7 +20,7 @@
  * ✅ Updated to match actual Slab GraphQL schema
  */
 
-import { Context, Effect, Layer } from "effect";
+import { Context, Effect, Layer, Data } from "effect";
 import type { SlabPost, SlabSearchResult, SlabListResult } from "./types.ts";
 import { ConfigService } from "./config.ts";
 import {
@@ -30,36 +30,29 @@ import {
   GET_TOPIC_POSTS_QUERY,
   GET_ORGANIZATION_POSTS_QUERY,
 } from "./graphql.ts";
-import { contentToMarkdown } from "./deltaToMarkdown.ts";
+import { contentToMarkdown, DeltaConversionError } from "./deltaToMarkdown.ts";
 
-/**
- * Error types for Slab API operations
- */
-export class SlabApiError {
-  readonly _tag = "SlabApiError";
-  constructor(
-    readonly message: string,
-    readonly status?: number,
-    readonly graphqlErrors?: any[]
-  ) {}
-}
+export class SlabApiError extends Data.TaggedError("SlabApiError")<{
+  readonly message: string;
+  readonly status?: number;
+  readonly graphqlErrors?: any[];
+}> {}
 
-export class SlabNetworkError {
-  readonly _tag = "SlabNetworkError";
-  constructor(
-    readonly message: string,
-    readonly cause?: unknown
-  ) {}
-}
+export class SlabNetworkError extends Data.TaggedError("SlabNetworkError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 
 /**
  * Slab client service interface
  */
+type SlabError = SlabApiError | SlabNetworkError | DeltaConversionError;
+
 export interface SlabClientService {
-  readonly getPost: (postId: string) => Effect.Effect<SlabPost, SlabApiError | SlabNetworkError>;
-  readonly updatePost: (postId: string, content: string) => Effect.Effect<SlabPost, SlabApiError | SlabNetworkError>;
-  readonly searchPosts: (query: string) => Effect.Effect<SlabSearchResult, SlabApiError | SlabNetworkError>;
-  readonly listPosts: (topicId?: string) => Effect.Effect<SlabListResult, SlabApiError | SlabNetworkError>;
+  readonly getPost: (postId: string) => Effect.Effect<SlabPost, SlabError>;
+  readonly updatePost: (postId: string, content: string) => Effect.Effect<SlabPost, SlabError>;
+  readonly searchPosts: (query: string) => Effect.Effect<SlabSearchResult, SlabError>;
+  readonly listPosts: (topicId?: string) => Effect.Effect<SlabListResult, SlabError>;
 }
 
 /**
@@ -109,37 +102,37 @@ const makeGraphQLRequest = <T>(
           },
           body: JSON.stringify(request),
         }),
-      catch: (error) => new SlabNetworkError(`Network error: ${error}`, error),
+      catch: (error) => new SlabNetworkError({ message: `Network error: ${error}`, cause: error }),
     });
 
     // Check if response is ok
     if (!response.ok) {
       const errorText = yield* Effect.tryPromise({
         try: () => response.text(),
-        catch: (error) => new SlabNetworkError(`Unable to read error response: ${error}`, error),
+        catch: (error) => new SlabNetworkError({ message: `Unable to read error response: ${error}`, cause: error }),
       });
       return yield* Effect.fail(
-        new SlabApiError(`Slab GraphQL API error (${response.status}): ${errorText}`, response.status)
+        new SlabApiError({ message: `Slab GraphQL API error (${response.status}): ${errorText}`, status: response.status })
       );
     }
 
     // Parse JSON response
     const json = yield* Effect.tryPromise({
       try: () => response.json() as Promise<GraphQLResponse<T>>,
-      catch: (error) => new SlabNetworkError(`Failed to parse JSON response: ${error}`, error),
+      catch: (error) => new SlabNetworkError({ message: `Failed to parse JSON response: ${error}`, cause: error }),
     });
 
     // Check for GraphQL errors
     if (json.errors && json.errors.length > 0) {
       const errorMessages = json.errors.map((e) => e.message).join(", ");
       return yield* Effect.fail(
-        new SlabApiError(`GraphQL errors: ${errorMessages}`, response.status, json.errors)
+        new SlabApiError({ message: `GraphQL errors: ${errorMessages}`, status: response.status, graphqlErrors: json.errors })
       );
     }
 
     // Check for data
     if (!json.data) {
-      return yield* Effect.fail(new SlabApiError("GraphQL response missing data field", response.status));
+      return yield* Effect.fail(new SlabApiError({ message: "GraphQL response missing data field", status: response.status }));
     }
 
     return json.data;
@@ -173,26 +166,26 @@ const createReplacementDelta = (currentContent: any, newText: string): any => {
  * Transform GraphQL post response to SlabPost type
  * Uses actual Slab schema field names: insertedAt, publishedAt, owner
  */
-const transformPost = (post: any): SlabPost => {
-  // Convert Delta JSON content to Markdown for proper formatting
-  const contentText = contentToMarkdown(post.content);
+const transformPost = (post: any): Effect.Effect<SlabPost, DeltaConversionError> =>
+  Effect.gen(function* () {
+    const contentText = yield* contentToMarkdown(post.content);
 
-  return {
-    id: post.id,
-    title: post.title,
-    content: contentText,
-    url: post.url || `https://slab.com/posts/${post.id}`, // Construct URL if not provided
-    created_at: post.insertedAt, // Slab uses insertedAt
-    updated_at: post.updatedAt,
-    created_by: post.owner
-      ? {
-          id: post.owner.id,
-          display_name: post.owner.name,
-          email: post.owner.email,
-        }
-      : undefined,
-  };
-};
+    return {
+      id: post.id,
+      title: post.title,
+      content: contentText,
+      url: post.url || `https://slab.com/posts/${post.id}`,
+      created_at: post.insertedAt,
+      updated_at: post.updatedAt,
+      created_by: post.owner
+        ? {
+            id: post.owner.id,
+            display_name: post.owner.name,
+            email: post.owner.email,
+          }
+        : undefined,
+    };
+  });
 
 /**
  * Live Slab GraphQL client implementation
@@ -210,77 +203,65 @@ export const SlabClientServiceLive = Layer.effect(
             query: GET_POST_QUERY,
             variables: { id: postId },
           });
-          return transformPost(data.post);
+          return yield* transformPost(data.post);
         }),
 
       updatePost: (postId: string, content: string) =>
         Effect.gen(function* () {
-          // First, get the current post to calculate the replacement delta
           const currentData = yield* makeGraphQLRequest<{ post: any }>(graphqlUrl, apiToken, {
             query: GET_POST_QUERY,
             variables: { id: postId },
           });
 
-          // Create delta that replaces all content
           const delta = createReplacementDelta(currentData.post.content, content);
 
-          // Update the post content
           const updateData = yield* makeGraphQLRequest<{ updatePostContent: any }>(graphqlUrl, apiToken, {
             query: UPDATE_POST_CONTENT_MUTATION,
             variables: { id: postId, delta },
           });
 
-          return transformPost(updateData.updatePostContent);
+          return yield* transformPost(updateData.updatePostContent);
         }),
 
       searchPosts: (query: string) =>
         Effect.gen(function* () {
           const data = yield* makeGraphQLRequest<{ search: any }>(graphqlUrl, apiToken, {
             query: SEARCH_POSTS_QUERY,
-            variables: { query, first: 20 }, // Get first 20 results
+            variables: { query, first: 20 },
           });
 
-          // Extract posts from search edges
-          const posts =
-            data.search.edges?.map((edge: any) => {
-              if (edge.node && edge.node.post) {
-                return transformPost(edge.node.post);
-              }
-              return null;
-            }).filter(Boolean) || [];
+          const edges: any[] = data.search.edges || [];
+          const postEffects = edges
+            .filter((edge: any) => edge.node?.post)
+            .map((edge: any) => transformPost(edge.node.post));
+          const posts: SlabPost[] = yield* Effect.all(postEffects);
 
           return {
             posts,
-            total_count: posts.length, // Total count not directly available in cursor pagination
+            total_count: posts.length,
           };
         }),
 
       listPosts: (topicId?: string) =>
         Effect.gen(function* () {
           if (topicId) {
-            // Get posts for specific topic
             const data = yield* makeGraphQLRequest<{ topic: any }>(graphqlUrl, apiToken, {
               query: GET_TOPIC_POSTS_QUERY,
               variables: { topicId },
             });
 
-            const posts = (data.topic.posts || []).map(transformPost);
-            return {
-              posts,
-              total_count: posts.length,
-            };
+            const rawPosts: any[] = data.topic.posts || [];
+            const posts: SlabPost[] = yield* Effect.all(rawPosts.map(transformPost));
+            return { posts, total_count: posts.length };
           } else {
-            // Get all organization posts
             const data = yield* makeGraphQLRequest<{ organization: any }>(graphqlUrl, apiToken, {
               query: GET_ORGANIZATION_POSTS_QUERY,
               variables: {},
             });
 
-            const posts = (data.organization.posts || []).map(transformPost);
-            return {
-              posts,
-              total_count: posts.length,
-            };
+            const rawPosts: any[] = data.organization.posts || [];
+            const posts: SlabPost[] = yield* Effect.all(rawPosts.map(transformPost));
+            return { posts, total_count: posts.length };
           }
         }),
     };

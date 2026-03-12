@@ -9,25 +9,20 @@
  * preserving headings, lists, links, code blocks, emphasis, images, etc.
  */
 
+import { Effect, Data } from "effect";
 import { QuillDeltaToHtmlConverter } from "quill-delta-to-html";
 import TurndownService from "turndown";
 
-/**
- * A single Quill Delta operation
- */
+export class DeltaConversionError extends Data.TaggedError("DeltaConversionError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
+
 interface DeltaOp {
   insert: any;
   attributes?: Record<string, any>;
 }
 
-/**
- * Quill Delta — can be a bare ops array or a wrapper object
- */
-type Delta = DeltaOp[] | { ops: DeltaOp[] };
-
-/**
- * Normalize Delta input to a plain ops array
- */
 function normalizeOps(delta: any): DeltaOp[] {
   if (Array.isArray(delta)) return delta;
   if (delta && Array.isArray(delta.ops)) return delta.ops;
@@ -39,44 +34,47 @@ function normalizeOps(delta: any): DeltaOp[] {
  *
  * Pipeline: Delta ops → HTML (quill-delta-to-html) → Markdown (turndown)
  */
-export function deltaToMarkdown(delta: any): string {
-  const ops = normalizeOps(delta);
-  if (!ops.length) return "";
+export const deltaToMarkdown = (delta: any): Effect.Effect<string, DeltaConversionError> =>
+  Effect.try({
+    try: () => {
+      const ops = normalizeOps(delta);
+      if (!ops.length) return "";
 
-  // --- Step 1: Delta → HTML ---
-  const htmlConverter = new QuillDeltaToHtmlConverter(ops, {
-    // Use <p> for paragraphs so turndown can process them cleanly
-    paragraphTag: "p",
-  });
-  const html = htmlConverter.convert();
+      const htmlConverter = new QuillDeltaToHtmlConverter(ops, {
+        paragraphTag: "p",
+      });
+      const html = htmlConverter.convert();
 
-  // --- Step 2: HTML → Markdown ---
-  const turndown = new TurndownService({
-    headingStyle: "atx",           // # Heading
-    codeBlockStyle: "fenced",      // ```code```
-    emDelimiter: "_",              // _emphasis_
-    bulletListMarker: "-",         // - list item
-    hr: "---",
-  });
+      const turndown = new TurndownService({
+        headingStyle: "atx",
+        codeBlockStyle: "fenced",
+        emDelimiter: "_",
+        bulletListMarker: "-",
+        hr: "---",
+      });
 
-  // Custom rule: fenced code blocks with language annotation
-  turndown.addRule("fencedCodeBlocks", {
-    filter: (node) =>
-      node.nodeName === "PRE" &&
-      !!node.firstChild &&
-      node.firstChild.nodeName === "CODE",
-    replacement: (_content, node) => {
-      const codeNode = node.firstChild as Element;
-      const className = codeNode.getAttribute?.("class") || "";
-      const langMatch = className.match(/language-([a-z0-9_+-]+)/i);
-      const lang = langMatch ? langMatch[1] : "";
-      const code = codeNode.textContent ?? "";
-      return `\n\`\`\`${lang}\n${code}\n\`\`\`\n`;
+      turndown.addRule("fencedCodeBlocks", {
+        filter: (node) =>
+          node.nodeName === "PRE" &&
+          !!node.firstChild &&
+          node.firstChild.nodeName === "CODE",
+        replacement: (_content, node) => {
+          const codeNode = node.firstChild as Element;
+          const className = codeNode.getAttribute?.("class") || "";
+          const langMatch = className.match(/language-([a-z0-9_+-]+)/i);
+          const lang = langMatch ? langMatch[1] : "";
+          const code = codeNode.textContent ?? "";
+          return `\n\`\`\`${lang}\n${code}\n\`\`\`\n`;
+        },
+      });
+
+      return turndown.turndown(html).trim();
     },
+    catch: (error) => new DeltaConversionError({
+      message: `Failed to convert Delta to Markdown: ${error}`,
+      cause: error,
+    }),
   });
-
-  return turndown.turndown(html).trim();
-}
 
 /**
  * Convert Slab post content to Markdown, handling all known content shapes:
@@ -84,14 +82,12 @@ export function deltaToMarkdown(delta: any): string {
  * - Quill Delta ops array
  * - Quill Delta wrapper object { ops: [...] }
  */
-export function contentToMarkdown(content: any): string {
-  // Already a plain string — return as-is
-  if (typeof content === "string") return content.trim();
+export const contentToMarkdown = (content: any): Effect.Effect<string, DeltaConversionError> => {
+  if (typeof content === "string") return Effect.succeed(content.trim());
 
-  // Quill Delta (array of ops or { ops: [...] })
   if (Array.isArray(content) || (content && Array.isArray(content.ops))) {
     return deltaToMarkdown(content);
   }
 
-  return "";
-}
+  return Effect.succeed("");
+};
