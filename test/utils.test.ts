@@ -1,6 +1,14 @@
 import { test, expect, describe } from "bun:test";
 import { Effect } from "effect";
-import { extractPostId } from "../src/utils.ts";
+import { extractPostId, InvalidPostIdError } from "../src/utils.ts";
+
+describe("InvalidPostIdError", () => {
+  test("should have correct _tag", () => {
+    const error = new InvalidPostIdError({ message: "test" });
+    expect(error._tag).toBe("InvalidPostIdError");
+    expect(error.message).toBe("test");
+  });
+});
 
 describe("extractPostId", () => {
   test("should extract post ID from full URL", async () => {

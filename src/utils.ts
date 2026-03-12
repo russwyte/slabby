@@ -18,15 +18,11 @@
  * Utility functions for Slabby using Effect
  */
 
-import { Effect } from "effect";
+import { Effect, Data } from "effect";
 
-/**
- * Error for invalid post ID extraction
- */
-export class InvalidPostIdError {
-  readonly _tag = "InvalidPostIdError";
-  constructor(readonly message: string) {}
-}
+export class InvalidPostIdError extends Data.TaggedError("InvalidPostIdError")<{
+  readonly message: string;
+}> {}
 
 /**
  * Extracts a post ID from either a URL or a direct ID string
@@ -39,14 +35,14 @@ export function extractPostId(input: string): Effect.Effect<string, InvalidPostI
     if (input.startsWith("http")) {
       const url = yield* Effect.try({
         try: () => new URL(input),
-        catch: (error) => new InvalidPostIdError(`Invalid URL: ${error}`),
+        catch: (error) => new InvalidPostIdError({ message: `Invalid URL: ${error}` }),
       });
 
       const pathParts = url.pathname.split("/");
       const postId = pathParts[pathParts.length - 1];
 
       if (!postId) {
-        return yield* Effect.fail(new InvalidPostIdError("Could not extract post ID from URL"));
+        return yield* Effect.fail(new InvalidPostIdError({ message: "Could not extract post ID from URL" }));
       }
 
       return postId;
