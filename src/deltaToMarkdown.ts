@@ -61,16 +61,16 @@ export function deltaToMarkdown(delta: any): string {
 
   // Custom rule: fenced code blocks with language annotation
   turndown.addRule("fencedCodeBlocks", {
-    filter: (node: any) =>
+    filter: (node) =>
       node.nodeName === "PRE" &&
       !!node.firstChild &&
       node.firstChild.nodeName === "CODE",
-    replacement: (_content: string, node: any) => {
-      const codeNode = node.firstChild;
-      const className = codeNode?.getAttribute?.("class") || "";
+    replacement: (_content, node) => {
+      const codeNode = node.firstChild as Element;
+      const className = codeNode.getAttribute?.("class") || "";
       const langMatch = className.match(/language-([a-z0-9_+-]+)/i);
       const lang = langMatch ? langMatch[1] : "";
-      const code = codeNode?.textContent ?? "";
+      const code = codeNode.textContent ?? "";
       return `\n\`\`\`${lang}\n${code}\n\`\`\`\n`;
     },
   });
