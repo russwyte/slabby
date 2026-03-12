@@ -142,15 +142,15 @@ npx @modelcontextprotocol/inspector bun run index.ts
 
 Slabby implements the [Model Context Protocol](https://modelcontextprotocol.io), which allows AI assistants like Claude to interact with external tools and services. When you ask Claude Code to read or update Slab content, it:
 
-1. Uses your Slab API token to authenticate (format: `Authorization: token YOUR_TOKEN`)
+1. Uses your Slab API token to authenticate (format: `Authorization: Bearer YOUR_TOKEN`)
 2. Makes requests to the Slab GraphQL API at `https://api.slab.com/v1/graphql`
-3. Returns results to Claude Code
-4. All edits are attributed to your user account in Slab
+3. Converts Quill Delta content to Markdown for readability
+4. Returns results to Claude Code
 
 ## Security
 
 - **API tokens are stored locally** - Never sent to Anthropic's servers
-- **Edits show as you** - All changes attributed to your Slab account
+- **Markdown output** - Quill Delta content automatically converted to Markdown
 - **Read-only by default** - Update operations require explicit permission
 - **Environment-based config** - Tokens stored in `.env` (gitignored)
 
@@ -161,11 +161,12 @@ https://studio.apollographql.com/public/Slab/variant/current/schema/reference
 
 Key operations:
 - `query GetPost` - Fetch post content by ID
-- `mutation UpdatePost` - Update post content
-- `query SearchPosts` - Search posts across workspace
-- `query ListPosts` - List posts, optionally filtered by topic
+- `mutation UpdatePostContent` - Update post content using Quill Delta format
+- `query SearchPosts` - Search posts across workspace (cursor-based pagination)
+- `query GetTopicPosts` - List posts in a specific topic
+- `query GetOrganizationPosts` - List all posts in the organization
 
-**⚠️ Important**: The GraphQL queries in this project are based on common GraphQL patterns and need to be verified against the actual Slab schema before use with production credentials. See [SCHEMA_VERIFICATION.md](SCHEMA_VERIFICATION.md) for a detailed verification checklist.
+See [SCHEMA_VERIFICATION.md](SCHEMA_VERIFICATION.md) for detailed schema documentation.
 
 ## Troubleshooting
 

@@ -232,11 +232,9 @@ describe("SlabClient with GraphQL (Verified Schema)", () => {
               {
                 id: "1",
                 title: "Post 1",
-                content: [{ insert: "Content" }, { insert: "\n\n" }],
-                insertedAt: "2024-01-01T00:00:00Z",
                 publishedAt: "2024-01-01T00:00:00Z",
                 linkAccess: "INTERNAL",
-                topics: [{ id: "topic1", name: "General" }],
+                topics: [{ id: "topic1" }],
               },
             ],
           },

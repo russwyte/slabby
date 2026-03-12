@@ -180,12 +180,10 @@ export const GET_ORGANIZATION_POSTS_QUERY = `
       posts {
         id
         title
-        insertedAt
         publishedAt
         linkAccess
         topics {
           id
-          name
         }
       }
     }

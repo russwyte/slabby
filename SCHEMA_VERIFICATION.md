@@ -79,12 +79,12 @@ Slab uses **camelCase** for GraphQL (not snake_case):
   { insert: "\n\n" }
 ]
 
-// Plain text (what we expose to MCP clients)
-"Hello World\n\n"
+// Markdown (what we expose to MCP clients, converted via quill-delta-to-html + turndown)
+"**Hello** World"
 ```
 
 Our implementation:
-- **Reading**: Converts Delta to plain text automatically
+- **Reading**: Converts Delta to Markdown automatically (via `quill-delta-to-html` → `turndown`)
 - **Writing**: Converts plain text to Delta and creates replacement operation
 
 ### ✅ Pagination
@@ -119,9 +119,14 @@ Since `posts(ids: [ID!]!)` doesn't support topic filtering, we use:
 - **Input**: Plain text from MCP clients
 - **Processing**: Convert to Quill Delta format
 - **Storage**: Delta format in Slab
-- **Output**: Plain text to MCP clients
+- **Output**: Markdown to MCP clients (Delta → HTML → Markdown)
 
-### 3. Update Strategy
+### 3. Organization Posts (SlimPost)
+`organization.posts` returns `[SlimPost!]!` which has fewer fields than `Post`:
+- Available: `id`, `linkAccess`, `archivedAt`, `publishedAt`, `title`, `topics` (as `[SlimTopic!]!` with only `id`)
+- NOT available: `content`, `insertedAt`, `updatedAt`, `owner`, `version`
+
+### 4. Update Strategy
 To update post content:
 1. GET current post to get current content
 2. Calculate replacement delta (delete all, insert new)
