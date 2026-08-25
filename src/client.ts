@@ -165,8 +165,11 @@ const createReplacementDelta = (currentContent: any, newText: string): any => {
 /**
  * Transform GraphQL post response to SlabPost type
  * Uses actual Slab schema field names: insertedAt, publishedAt, owner
+ *
+ * The Slab Post type has no url field, so the url is constructed from the
+ * configured team subdomain.
  */
-const transformPost = (post: any): Effect.Effect<SlabPost, DeltaConversionError> =>
+const transformPost = (post: any, team: string): Effect.Effect<SlabPost, DeltaConversionError> =>
   Effect.gen(function* () {
     const contentText = yield* contentToMarkdown(post.content);
 
@@ -174,7 +177,7 @@ const transformPost = (post: any): Effect.Effect<SlabPost, DeltaConversionError>
       id: post.id,
       title: post.title,
       content: contentText,
-      url: post.url || `https://slab.com/posts/${post.id}`,
+      url: `https://${team}.slab.com/posts/${post.id}`,
       created_at: post.insertedAt,
       updated_at: post.updatedAt,
       created_by: post.owner
@@ -194,7 +197,7 @@ export const SlabClientServiceLive = Layer.effect(
   SlabClientService,
   Effect.gen(function* () {
     const { config } = yield* ConfigService;
-    const { graphqlUrl, apiToken } = config;
+    const { graphqlUrl, apiToken, team } = config;
 
     return {
       getPost: (postId: string) =>
@@ -203,7 +206,7 @@ export const SlabClientServiceLive = Layer.effect(
             query: GET_POST_QUERY,
             variables: { id: postId },
           });
-          return yield* transformPost(data.post);
+          return yield* transformPost(data.post, team);
         }),
 
       updatePost: (postId: string, content: string) =>
@@ -220,7 +223,7 @@ export const SlabClientServiceLive = Layer.effect(
             variables: { id: postId, delta },
           });
 
-          return yield* transformPost(updateData.updatePostContent);
+          return yield* transformPost(updateData.updatePostContent, team);
         }),
 
       searchPosts: (query: string) =>
@@ -233,7 +236,11 @@ export const SlabClientServiceLive = Layer.effect(
           const edges: any[] = data.search.edges || [];
           const postEffects = edges
             .filter((edge: any) => edge.node?.post)
-            .map((edge: any) => transformPost(edge.node.post));
+            .map((edge: any) =>
+              transformPost(edge.node.post, team).pipe(
+                Effect.map((post) => ({ ...post, snippet: edge.node.highlight || undefined }))
+              )
+            );
           const posts: SlabPost[] = yield* Effect.all(postEffects);
 
           return {
@@ -251,7 +258,7 @@ export const SlabClientServiceLive = Layer.effect(
             });
 
             const rawPosts: any[] = data.topic.posts || [];
-            const posts: SlabPost[] = yield* Effect.all(rawPosts.map(transformPost));
+            const posts: SlabPost[] = yield* Effect.all(rawPosts.map((p) => transformPost(p, team)));
             return { posts, total_count: posts.length };
           } else {
             const data = yield* makeGraphQLRequest<{ organization: any }>(graphqlUrl, apiToken, {
@@ -260,7 +267,7 @@ export const SlabClientServiceLive = Layer.effect(
             });
 
             const rawPosts: any[] = data.organization.posts || [];
-            const posts: SlabPost[] = yield* Effect.all(rawPosts.map(transformPost));
+            const posts: SlabPost[] = yield* Effect.all(rawPosts.map((p) => transformPost(p, team)));
             return { posts, total_count: posts.length };
           }
         }),
