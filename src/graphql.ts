@@ -57,10 +57,18 @@ export const GET_POST_QUERY = `
  * Mutation to update a post's content using Delta format
  *
  * Slab uses Quill Delta format for content updates.
- * This helper creates a delta that replaces all content.
  *
  * Delta format example:
  * { "ops": [{"delete": N}, {"insert": "new content\n\n"}] }
+ *
+ * IMPORTANT: the `delta` variable must be passed as a JSON-encoded STRING
+ * (e.g. JSON.stringify({ops: [...]})), mirroring how the API returns post
+ * content. Passing a raw object fails Absinthe input validation with
+ * `Argument "delta" has invalid value $delta. In field "ops": Unknown field.`
+ *
+ * ALSO IMPORTANT: this mutation writes to the post's unpublished draft.
+ * `post.content` reflects the published revision, so the change is invisible
+ * until the post is re-published (see PUBLISH_POST_MUTATION).
  */
 export const UPDATE_POST_CONTENT_MUTATION = `
   mutation UpdatePostContent($id: ID!, $delta: Json!) {
@@ -70,6 +78,63 @@ export const UPDATE_POST_CONTENT_MUTATION = `
       content
       updatedAt
       version
+    }
+  }
+`;
+
+/**
+ * Mutation to set a post's published state.
+ *
+ * updatePostContent edits land in the post's draft; post.content returns the
+ * published revision. Publishing promotes the draft — but ONLY on the
+ * false→true transition: `updatePost(published: true)` on an already-published
+ * post is a no-op (verified empirically). To promote a draft on a published
+ * post, unpublish then republish. Note this also publishes any pre-existing
+ * unpublished edits on the post.
+ */
+export const SET_POST_PUBLISHED_MUTATION = `
+  mutation SetPostPublished($id: ID!, $published: Boolean) {
+    updatePost(id: $id, published: $published) {
+      id
+      title
+      content
+      linkAccess
+      insertedAt
+      updatedAt
+      publishedAt
+      archivedAt
+      version
+      owner {
+        id
+        name
+        email
+        title
+        deactivatedAt
+      }
+    }
+  }
+`;
+
+/**
+ * Minimal create/delete mutations used to discover the token user's identity:
+ * the API has no viewer query, but the owner of a post we create is by
+ * definition the token's user. The probe post is deleted immediately.
+ */
+export const CREATE_PROBE_POST_MUTATION = `
+  mutation CreateProbePost($title: String) {
+    createPost(title: $title) {
+      id
+      owner {
+        id
+      }
+    }
+  }
+`;
+
+export const DELETE_POST_MUTATION = `
+  mutation DeletePost($id: ID!) {
+    deletePost(id: $id) {
+      id
     }
   }
 `;

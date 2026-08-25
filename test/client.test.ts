@@ -133,14 +133,27 @@ describe("SlabClient with GraphQL (Verified Schema)", () => {
         },
       };
 
-      // Second call: update post content
+      // Second call: update post content (writes to the draft)
       const mockUpdateResponse = {
         data: {
           updatePostContent: {
             id: "123",
             title: "Test Post",
+            content: [{ insert: "Old content" }, { insert: "\n\n" }],
+            updatedAt: "2024-01-03T00:00:00Z",
+          },
+        },
+      };
+
+      // Third call: publish the draft so the change becomes visible
+      const mockPublishResponse = {
+        data: {
+          updatePost: {
+            id: "123",
+            title: "Test Post",
             content: [{ insert: "Updated content" }, { insert: "\n\n" }],
             updatedAt: "2024-01-03T00:00:00Z",
+            publishedAt: "2024-01-03T00:00:00Z",
           },
         },
       };
@@ -153,18 +166,29 @@ describe("SlabClient with GraphQL (Verified Schema)", () => {
         .mockResolvedValueOnce({
           ok: true,
           json: async () => mockUpdateResponse,
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => mockPublishResponse,
         });
 
       const result = await Effect.runPromise(client.updatePost("123", "Updated content"));
 
       expect(result.content).toBe("Updated content");
-      expect(mockFetch).toHaveBeenCalledTimes(2); // GET then UPDATE
+      expect(mockFetch).toHaveBeenCalledTimes(3); // GET, UPDATE, PUBLISH
 
       // Check that the second call uses updatePostContent mutation
       const secondCall = mockFetch.mock.calls[1];
       const body = JSON.parse(secondCall?.[1]?.body);
       expect(body.query).toContain("UpdatePostContent");
-      expect(body.variables.delta.ops).toBeDefined();
+      // Slab's Json scalar requires the delta as a JSON-encoded string
+      expect(typeof body.variables.delta).toBe("string");
+      const delta = JSON.parse(body.variables.delta);
+      expect(delta.ops).toBeDefined();
+      // Replacement: delete existing content, then insert converted markdown
+      expect(delta.ops[0]).toEqual({ delete: 13 });
+      expect(delta.ops[1]).toEqual({ insert: "Updated content" });
+      expect(delta.ops[2]).toEqual({ insert: "\n" });
     });
   });
 
