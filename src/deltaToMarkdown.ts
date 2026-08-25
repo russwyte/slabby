@@ -53,6 +53,16 @@ type Segment =
   | { type: "hr" }
   | { type: "image"; source: string };
 
+/**
+ * Pick a backtick fence longer than any backtick run inside the code, so code
+ * that itself contains ``` lines survives a read-modify-write round trip
+ * (CommonMark's standard escape).
+ */
+function fenceFor(code: string): string {
+  const longest = (code.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
+  return "`".repeat(Math.max(3, longest + 1));
+}
+
 function segmentOps(ops: DeltaOp[]): Segment[] {
   const segments: Segment[] = [];
   let current: DeltaOp[] = [];
@@ -159,7 +169,8 @@ function richDeltaToMarkdown(ops: DeltaOp[]): string {
       const langMatch = className.match(/language-([a-z0-9_+-]+)/i);
       const lang = langMatch ? langMatch[1] : "";
       const code = codeNode.textContent ?? "";
-      return `\n\`\`\`${lang}\n${code}\n\`\`\`\n`;
+      const fence = fenceFor(code);
+      return `\n${fence}${lang}\n${code}\n${fence}\n`;
     },
   });
 
@@ -182,8 +193,11 @@ export const deltaToMarkdown = (delta: any): Effect.Effect<string, DeltaConversi
         switch (segment.type) {
           case "delta":
             return richDeltaToMarkdown(segment.ops);
-          case "code":
-            return `\`\`\`${segment.language ?? ""}\n${segment.text.replace(/\n$/, "")}\n\`\`\``;
+          case "code": {
+            const body = segment.text.replace(/\n$/, "");
+            const fence = fenceFor(body);
+            return `${fence}${segment.language ?? ""}\n${body}\n${fence}`;
+          }
           case "hr":
             return "---";
           case "image":

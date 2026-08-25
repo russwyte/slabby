@@ -1,7 +1,7 @@
 import { test, expect, describe, mock, beforeEach, afterEach } from "bun:test";
 import { Effect, Layer, Context } from "effect";
 import type { SlabClientService } from "../src/client.ts";
-import { SlabClientServiceLive } from "../src/client.ts";
+import { SlabClientServiceLive, __resetWriteCachesForTests } from "../src/client.ts";
 import type { ConfigService } from "../src/config.ts";
 
 // Mock the global fetch function
@@ -189,6 +189,96 @@ describe("SlabClient with GraphQL (Verified Schema)", () => {
       expect(delta.ops[0]).toEqual({ delete: 13 });
       expect(delta.ops[1]).toEqual({ insert: "Updated content" });
       expect(delta.ops[2]).toEqual({ insert: "\n" });
+    });
+  });
+
+  describe("writes to another user's published post (pendingPublish)", () => {
+    // updatePostContent applies to the invisible DRAFT while GET returns the
+    // published revision, so consecutive writes must size their deltas from
+    // the draft composed locally, not the stale published content.
+    const PUBLISHED_OPS = [{ insert: "Original body.\n" }]; // 15 UTF-16 units
+    const publishedContent = () => JSON.stringify(PUBLISHED_OPS);
+
+    let deltas: any[] = [];
+    let publishCalls = 0;
+    let getContent: () => string;
+
+    beforeEach(() => {
+      __resetWriteCachesForTests();
+      deltas = [];
+      publishCalls = 0;
+      getContent = publishedContent;
+
+      mockFetch.mockImplementation(async (_url: string, init: any) => {
+        const body = JSON.parse(init.body);
+        const q: string = body.query;
+        const respond = (data: any) => ({ ok: true, json: async () => ({ data }) });
+
+        if (q.includes("CreateProbePost")) {
+          return respond({ createPost: { id: "probe1", owner: { id: "token-user" } } });
+        }
+        if (q.includes("DeletePost")) {
+          return respond({ deletePost: { id: "probe1" } });
+        }
+        if (q.includes("UpdatePostContent")) {
+          deltas.push(JSON.parse(body.variables.delta));
+          return respond({ updatePostContent: { id: "pp1" } });
+        }
+        if (q.includes("SetPostPublished")) {
+          publishCalls++;
+          return respond({ updatePost: { id: "pp1" } });
+        }
+        // GetPost
+        return respond({
+          post: {
+            id: "pp1",
+            title: "Someone else's post",
+            content: getContent(),
+            insertedAt: "2024-01-01T00:00:00Z",
+            updatedAt: "2024-01-02T00:00:00Z",
+            publishedAt: "2024-01-01T00:00:00Z",
+            owner: { id: "other-user", name: "Other", email: "other@x.io" },
+          },
+        });
+      });
+    });
+
+    afterEach(() => {
+      __resetWriteCachesForTests();
+      mockFetch.mockReset();
+    });
+
+    test("never toggles publish state and flags pendingPublish", async () => {
+      const result = await Effect.runPromise(client.appendToPost("pp1", "First note"));
+      expect(publishCalls).toBe(0);
+      expect(result.pendingPublish).toBe(true);
+    });
+
+    test("second write sizes its delta from the composed draft, not stale published content", async () => {
+      await Effect.runPromise(client.appendToPost("pp1", "First note"));
+      await Effect.runPromise(client.appendToPost("pp1", "Second note"));
+
+      expect(deltas[0].ops[0]).toEqual({ retain: 15 });
+      // draft after write 1 = "Original body.\n" + "First note" + "\n" = 26 units
+      expect(deltas[1].ops[0]).toEqual({ retain: 26 });
+      expect(publishCalls).toBe(0);
+    });
+
+    test("replace after append deletes the draft length, not the published length", async () => {
+      await Effect.runPromise(client.appendToPost("pp1", "First note"));
+      await Effect.runPromise(client.updatePost("pp1", "Fresh body"));
+
+      expect(deltas[1].ops[0]).toEqual({ delete: 26 });
+    });
+
+    test("draft cache invalidates when the published content changes", async () => {
+      await Effect.runPromise(client.appendToPost("pp1", "First note"));
+
+      // Simulate a human publishing the draft (published content changed)
+      getContent = () => JSON.stringify([{ insert: "Original body.\nFirst note\n" }]); // 26 units
+      await Effect.runPromise(client.appendToPost("pp1", "Second note"));
+
+      expect(deltas[1].ops[0]).toEqual({ retain: 26 });
     });
   });
 
