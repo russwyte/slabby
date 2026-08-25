@@ -26,11 +26,20 @@ import { ConfigService } from "./config.ts";
 import {
   GET_POST_QUERY,
   UPDATE_POST_CONTENT_MUTATION,
+  SET_POST_PUBLISHED_MUTATION,
+  CREATE_PROBE_POST_MUTATION,
+  DELETE_POST_MUTATION,
   SEARCH_POSTS_QUERY,
   GET_TOPIC_POSTS_QUERY,
   GET_ORGANIZATION_POSTS_QUERY,
 } from "./graphql.ts";
-import { contentToMarkdown, DeltaConversionError } from "./deltaToMarkdown.ts";
+import { contentToMarkdown, normalizeOps, DeltaConversionError } from "./deltaToMarkdown.ts";
+import {
+  markdownToOps,
+  deltaLength,
+  endsWithNewline,
+  MarkdownConversionError,
+} from "./markdownToDelta.ts";
 
 export class SlabApiError extends Data.TaggedError("SlabApiError")<{
   readonly message: string;
@@ -46,11 +55,12 @@ export class SlabNetworkError extends Data.TaggedError("SlabNetworkError")<{
 /**
  * Slab client service interface
  */
-type SlabError = SlabApiError | SlabNetworkError | DeltaConversionError;
+type SlabError = SlabApiError | SlabNetworkError | DeltaConversionError | MarkdownConversionError;
 
 export interface SlabClientService {
   readonly getPost: (postId: string) => Effect.Effect<SlabPost, SlabError>;
   readonly updatePost: (postId: string, content: string) => Effect.Effect<SlabPost, SlabError>;
+  readonly appendToPost: (postId: string, content: string) => Effect.Effect<SlabPost, SlabError>;
   readonly searchPosts: (query: string) => Effect.Effect<SlabSearchResult, SlabError>;
   readonly listPosts: (topicId?: string) => Effect.Effect<SlabListResult, SlabError>;
 }
@@ -139,28 +149,56 @@ const makeGraphQLRequest = <T>(
   });
 
 /**
- * Create a delta operation to replace all content
- * First deletes everything, then inserts new content
+ * Length of existing post content in Quill terms. The API returns content as
+ * a JSON-encoded Delta string; normalizeOps handles decoding — without it the
+ * length would be 0 and a replace would prepend instead of replacing. A plain
+ * non-delta string (legacy shape) counts as its own length.
  */
-const createReplacementDelta = (currentContent: any, newText: string): any => {
-  // Calculate current content length
-  const currentLength = Array.isArray(currentContent)
-    ? currentContent.reduce((sum: number, op: any) => {
-        if (typeof op.insert === "string") return sum + op.insert.length;
-        return sum + 1; // embeds count as 1 character
-      }, 0)
-    : 0;
+const contentLength = (content: any): number => {
+  const ops = normalizeOps(content);
+  if (ops.length > 0) return deltaLength(ops);
+  return typeof content === "string" ? content.length : 0;
+};
 
-  // Ensure new text ends with double newline
-  const normalizedText = newText.endsWith("\n\n") ? newText : newText + "\n\n";
+/**
+ * Create a delta that replaces all content: delete everything, then insert
+ * the new content converted from markdown to Slab's delta dialect.
+ */
+const createReplacementDelta = (currentContent: any, markdown: string): any => {
+  const currentLength = contentLength(currentContent);
 
   return {
     ops: [
       ...(currentLength > 0 ? [{ delete: currentLength }] : []),
-      { insert: normalizedText },
+      ...markdownToOps(markdown),
     ],
   };
 };
+
+/**
+ * Create a delta that appends markdown-converted content to the end of the
+ * post without touching existing content: retain everything, then insert.
+ */
+const createAppendDelta = (currentContent: any, markdown: string): any => {
+  const currentOps = normalizeOps(currentContent);
+  const currentLength = contentLength(currentContent);
+
+  return {
+    ops: [
+      ...(currentLength > 0 ? [{ retain: currentLength }] : []),
+      // Keep the appended content on its own line
+      ...(endsWithNewline(currentOps) ? [] : [{ insert: "\n" }]),
+      ...markdownToOps(markdown),
+    ],
+  };
+};
+
+/**
+ * Cache of the token user's id, shared across layer builds. The Slab API has
+ * no viewer/me query, so identity is discovered once by creating a probe post
+ * (its owner is the token user) and deleting it immediately.
+ */
+let cachedTokenUserId: string | null | undefined;
 
 /**
  * Transform GraphQL post response to SlabPost type
@@ -199,6 +237,68 @@ export const SlabClientServiceLive = Layer.effect(
     const { config } = yield* ConfigService;
     const { graphqlUrl, apiToken, team } = config;
 
+    const getTokenUserId = Effect.gen(function* () {
+      if (cachedTokenUserId !== undefined) return cachedTokenUserId;
+      const created = yield* makeGraphQLRequest<{ createPost: any }>(graphqlUrl, apiToken, {
+        query: CREATE_PROBE_POST_MUTATION,
+        variables: { title: "slabby identity probe (auto-deleted)" },
+      }).pipe(Effect.catchAll(() => Effect.succeed(null)));
+      const probe = created?.createPost;
+      cachedTokenUserId = probe?.owner?.id ?? null;
+      if (probe?.id) {
+        yield* makeGraphQLRequest(graphqlUrl, apiToken, {
+          query: DELETE_POST_MUTATION,
+          variables: { id: probe.id },
+        }).pipe(Effect.catchAll(() => Effect.succeed(null)));
+      }
+      return cachedTokenUserId;
+    });
+
+    // updatePostContent writes to the post's DRAFT, while post.content returns
+    // the published revision (all behavior below verified against the live
+    // API). Making the draft visible depends on the post's state:
+    //
+    // - Never-published post: updatePost(published: true) promotes the draft.
+    // - Published post owned by the TOKEN USER: publishing is a no-op unless
+    //   the state transitions, so unpublish → republish. Safe only on own
+    //   posts.
+    // - Published post owned by SOMEONE ELSE: unpublish succeeds but republish
+    //   is FORBIDDEN, which would leave the post hidden. NEVER toggle here —
+    //   leave the edit in the draft and flag pendingPublish so a human can
+    //   click Publish in the Slab UI.
+    const finishWrite = (post: any) =>
+      Effect.gen(function* () {
+        if (post.publishedAt == null) {
+          const published = yield* makeGraphQLRequest<{ updatePost: any }>(graphqlUrl, apiToken, {
+            query: SET_POST_PUBLISHED_MUTATION,
+            variables: { id: post.id, published: true },
+          });
+          return yield* transformPost(published.updatePost, team);
+        }
+
+        const userId = yield* getTokenUserId;
+        if (userId != null && post.owner?.id === userId) {
+          yield* makeGraphQLRequest<{ updatePost: any }>(graphqlUrl, apiToken, {
+            query: SET_POST_PUBLISHED_MUTATION,
+            variables: { id: post.id, published: false },
+          });
+          // If the republish failed the post would be left hidden — retry
+          // before surfacing the error.
+          const published = yield* makeGraphQLRequest<{ updatePost: any }>(graphqlUrl, apiToken, {
+            query: SET_POST_PUBLISHED_MUTATION,
+            variables: { id: post.id, published: true },
+          }).pipe(Effect.retry({ times: 3 }));
+          return yield* transformPost(published.updatePost, team);
+        }
+
+        const fresh = yield* makeGraphQLRequest<{ post: any }>(graphqlUrl, apiToken, {
+          query: GET_POST_QUERY,
+          variables: { id: post.id },
+        });
+        const result = yield* transformPost(fresh.post, team);
+        return { ...result, pendingPublish: true };
+      });
+
     return {
       getPost: (postId: string) =>
         Effect.gen(function* () {
@@ -218,12 +318,37 @@ export const SlabClientServiceLive = Layer.effect(
 
           const delta = createReplacementDelta(currentData.post.content, content);
 
-          const updateData = yield* makeGraphQLRequest<{ updatePostContent: any }>(graphqlUrl, apiToken, {
+          // Slab's Json scalar expects a JSON-encoded string, mirroring how
+          // post content is returned. Sending a raw object fails Absinthe
+          // validation with `In field "ops": Unknown field`.
+          yield* makeGraphQLRequest<{ updatePostContent: any }>(graphqlUrl, apiToken, {
             query: UPDATE_POST_CONTENT_MUTATION,
-            variables: { id: postId, delta },
+            variables: { id: postId, delta: JSON.stringify(delta) },
           });
 
-          return yield* transformPost(updateData.updatePostContent, team);
+          return yield* finishWrite(currentData.post);
+        }),
+
+      appendToPost: (postId: string, content: string) =>
+        Effect.gen(function* () {
+          const currentData = yield* makeGraphQLRequest<{ post: any }>(graphqlUrl, apiToken, {
+            query: GET_POST_QUERY,
+            variables: { id: postId },
+          });
+
+          // Appending nothing would only create a blank paragraph
+          if (content.trim() === "") {
+            return yield* transformPost(currentData.post, team);
+          }
+
+          const delta = createAppendDelta(currentData.post.content, content);
+
+          yield* makeGraphQLRequest<{ updatePostContent: any }>(graphqlUrl, apiToken, {
+            query: UPDATE_POST_CONTENT_MUTATION,
+            variables: { id: postId, delta: JSON.stringify(delta) },
+          });
+
+          return yield* finishWrite(currentData.post);
         }),
 
       searchPosts: (query: string) =>

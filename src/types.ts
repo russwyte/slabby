@@ -33,6 +33,12 @@ export interface SlabPost {
   updated_at: string;
   created_by?: SlabUser;
   updated_by?: SlabUser;
+  /**
+   * Set when a write landed in the post's unpublished draft: the post is
+   * published, owned by another user, and the API forbids republishing it —
+   * a human must open the post in Slab and click Publish.
+   */
+  pendingPublish?: boolean;
 }
 
 export interface SlabSearchResult {
