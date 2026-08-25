@@ -45,6 +45,15 @@ export function extractPostId(input: string): Effect.Effect<string, InvalidPostI
         return yield* Effect.fail(new InvalidPostIdError({ message: "Could not extract post ID from URL" }));
       }
 
+      // Slab URLs usually embed the post id as the trailing segment of a
+      // human-readable slug, e.g. .../posts/my-post-title-0d9vtl28 -> 0d9vtl28.
+      // Slab ids are 8 base-36 characters; a shorter tail after the last
+      // hyphen is part of the title itself, not an id.
+      const slugMatch = postId.match(/-([a-z0-9]{8})$/i);
+      if (slugMatch?.[1]) {
+        return slugMatch[1];
+      }
+
       return postId;
     }
 
