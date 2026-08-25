@@ -166,17 +166,27 @@ export function parseInline(text: string, inherited: InlineAttrs = {}): DeltaOp[
     }
 
     // Italic: *text* (intra-word allowed) or _text_ (boundaries only, so
-    // snake_case identifiers survive)
+    // snake_case identifiers survive). The content may contain the OPPOSITE
+    // delimiter (*snake_case* stays intact) and is re-parsed for nesting.
     if (!matched) {
-      const italicMatch = remaining.match(/^([*_])((?:\\.|[^\\*_])+?)\1(?!\1)/);
-      if (
-        italicMatch &&
-        (italicMatch[1] === "*" || (!isWordChar(prevChar) && !isWordChar(remaining[italicMatch[0].length])))
-      ) {
+      const starItalic = remaining.match(/^\*((?:\\.|[^\\*])+?)\*(?!\*)/);
+      if (starItalic) {
         flushPlain();
-        ops.push(...parseInline(italicMatch[2]!, { ...inherited, italic: true }));
-        consumeMatch(italicMatch[0]);
+        ops.push(...parseInline(starItalic[1]!, { ...inherited, italic: true }));
+        consumeMatch(starItalic[0]);
         matched = true;
+      } else {
+        const underItalic = remaining.match(/^_((?:\\.|[^\\_])+?)_(?!_)/);
+        if (
+          underItalic &&
+          !isWordChar(prevChar) &&
+          !isWordChar(remaining[underItalic[0].length])
+        ) {
+          flushPlain();
+          ops.push(...parseInline(underItalic[1]!, { ...inherited, italic: true }));
+          consumeMatch(underItalic[0]);
+          matched = true;
+        }
       }
     }
 
@@ -260,16 +270,20 @@ export function markdownToOps(markdown: string): DeltaOp[] {
   while (i < lines.length) {
     const line = lines[i]!;
 
-    // Fenced code block → Slab code-embed. Any info string is accepted
-    // (```c#, ```node.js, ```python title="x"); the first token becomes the
-    // language.
-    const fenceMatch = line.match(/^```(.*)$/);
+    // Fenced code block → Slab code-embed. Fences follow CommonMark: 3+
+    // backticks (a 4-backtick fence can contain ``` lines), up to 3 leading
+    // spaces, info string must not contain a backtick (so a line holding an
+    // inline ```code span``` is NOT a fence), closer is an equal-or-longer
+    // backtick run. Any backtick-free info string is accepted (```c#,
+    // ```node.js, ```python title="x"); the first token becomes the language.
+    const fenceMatch = line.match(/^ {0,3}(`{3,})([^`]*)$/);
     if (fenceMatch) {
-      const info = fenceMatch[1]!.trim();
+      const closeRe = new RegExp(`^ {0,3}\`{${fenceMatch[1]!.length},}\\s*$`);
+      const info = fenceMatch[2]!.trim();
       const language = info.split(/\s+/)[0] || undefined;
       const codeLines: string[] = [];
       i++;
-      while (i < lines.length && !/^```\s*$/.test(lines[i]!)) {
+      while (i < lines.length && !closeRe.test(lines[i]!)) {
         codeLines.push(lines[i]!);
         i++;
       }

@@ -271,6 +271,66 @@ describe("markdownToOps", () => {
     const lineAttrs = ops.filter((o) => o.insert === "\n").map((o) => o.attributes);
     expect(lineAttrs).toEqual([{ list: "bullet" }, { list: "bullet" }]);
   });
+
+  test("4-backtick fence can contain ``` lines and does not swallow the document", () => {
+    const ops = markdownToOps("````\ncode with ``` inside\n````\nafter paragraph");
+    expect(ops).toEqual([
+      { insert: { "code-embed": [{ insert: "code with ``` inside\n" }] } },
+      { insert: "after paragraph" },
+      { insert: "\n" },
+    ]);
+  });
+
+  test("a line holding an inline ```code span``` is not a fence", () => {
+    const ops = markdownToOps("```inline code``` here\nnext line");
+    expect(ops).toEqual([
+      { insert: "inline code", attributes: { code: true } },
+      { insert: " here" },
+      { insert: "\n" },
+      { insert: "next line" },
+      { insert: "\n" },
+    ]);
+  });
+
+  test("closing fences may be indented up to 3 spaces", () => {
+    const ops = markdownToOps("```\ncode\n  ```\ntrailing");
+    expect(ops).toEqual([
+      { insert: { "code-embed": [{ insert: "code\n" }] } },
+      { insert: "trailing" },
+      { insert: "\n" },
+    ]);
+  });
+});
+
+describe("emphasis content and nesting", () => {
+  test("*snake_case* italicizes with the underscore intact", () => {
+    expect(parseInline("*hello_world*")).toEqual([
+      { insert: "hello_world", attributes: { italic: true } },
+    ]);
+  });
+
+  test("bold nests inside underscore italics", () => {
+    expect(parseInline("_has **bold** inside_")).toEqual([
+      { insert: "has ", attributes: { italic: true } },
+      { insert: "bold", attributes: { italic: true, bold: true } },
+      { insert: " inside", attributes: { italic: true } },
+    ]);
+  });
+});
+
+describe("fence escaping on read (deltaToMarkdown)", () => {
+  test("code containing ``` lines round-trips via a longer fence", async () => {
+    const original = [
+      { insert: { "code-embed": [{ insert: "To write a fence:\n```js\nfoo()\n```\ndone\n" }] } },
+      { insert: "after paragraph" },
+      { insert: "\n" },
+    ];
+    const markdown = await Effect.runPromise(deltaToMarkdown(original));
+    expect(markdown).toContain("````");
+
+    const reparsed = markdownToOps(markdown);
+    expect(reparsed).toEqual(original);
+  });
 });
 
 describe("deltaLength / endsWithNewline", () => {
