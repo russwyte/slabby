@@ -93,6 +93,25 @@ describe("contentToMarkdown", () => {
     expect(result).toContain("Wrapped");
   });
 
+  test("should decode JSON-encoded delta strings (Slab API shape)", async () => {
+    const content = JSON.stringify([
+      { attributes: { author: "abc" }, insert: "Heading" },
+      { attributes: { header: 1 }, insert: "\n" },
+      { insert: "Body text\n" },
+    ]);
+    const result = await Effect.runPromise(contentToMarkdown(content));
+    expect(result).toContain("# Heading");
+    expect(result).toContain("Body text");
+    expect(result).not.toContain('"insert"');
+  });
+
+  test("should decode JSON-encoded delta wrapper strings", async () => {
+    const content = JSON.stringify({ ops: [{ insert: "Wrapped string\n" }] });
+    const result = await Effect.runPromise(contentToMarkdown(content));
+    expect(result).toContain("Wrapped string");
+    expect(result).not.toContain('"ops"');
+  });
+
   test("should return empty string for null", async () => {
     const result = await Effect.runPromise(contentToMarkdown(null));
     expect(result).toBe("");

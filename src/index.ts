@@ -58,7 +58,21 @@ const toolHandlers = {
       const client = yield* SlabClientService;
       const postId = yield* extractPostId(args.postId as string);
       const result = yield* client.updatePost(postId, args.content as string);
+      if (result.pendingPublish) {
+        return `Post content updated, but the change is saved as an UNPUBLISHED DRAFT: the post is published and owned by another user, and the Slab API forbids republishing it. Ask someone with edit access to open the post in Slab and click Publish. ${JSON.stringify(result, null, 2)}`;
+      }
       return `Post updated successfully: ${JSON.stringify(result, null, 2)}`;
+    }),
+
+  "slab__append_to_post": (args: any) =>
+    Effect.gen(function* () {
+      const client = yield* SlabClientService;
+      const postId = yield* extractPostId(args.postId as string);
+      const result = yield* client.appendToPost(postId, args.content as string);
+      if (result.pendingPublish) {
+        return `Content appended, but the change is saved as an UNPUBLISHED DRAFT: the post is published and owned by another user, and the Slab API forbids republishing it. Ask someone with edit access to open the post in Slab and click Publish. ${JSON.stringify(result, null, 2)}`;
+      }
+      return `Content appended successfully: ${JSON.stringify(result, null, 2)}`;
     }),
 
   "slab__search": (args: any) =>
@@ -113,7 +127,8 @@ function createServer() {
         },
         {
           name: "slab__update_post",
-          description: "Update a Slab post with new content. Edits will be attributed to your user account.",
+          description:
+            "REPLACE the entire content of a Slab post with new markdown content (converted to rich text). Destructive: existing content is overwritten, and Slab-specific elements the markdown cannot express (user mentions, embeds, tables) are lost. Prefer slab__append_to_post for additions. On published posts owned by another user the change lands as an unpublished draft that a human must publish in the Slab UI (the result says so). Edits are attributed to your user account.",
           inputSchema: {
             type: "object",
             properties: {
@@ -123,7 +138,27 @@ function createServer() {
               },
               content: {
                 type: "string",
-                description: "The new content for the post in markdown format",
+                description:
+                  "The new content for the post in markdown format. The first line becomes the post title.",
+              },
+            },
+            required: ["postId", "content"],
+          },
+        },
+        {
+          name: "slab__append_to_post",
+          description:
+            "Append markdown content (converted to rich text) to the END of a Slab post. Non-destructive: existing content is untouched. On published posts owned by another user the change lands as an unpublished draft that a human must publish in the Slab UI (the result says so). Edits are attributed to your user account.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              postId: {
+                type: "string",
+                description: "The Slab post ID or full post URL",
+              },
+              content: {
+                type: "string",
+                description: "The markdown content to append to the post",
               },
             },
             required: ["postId", "content"],
